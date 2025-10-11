@@ -1,0 +1,23 @@
+{
+  "name": "canvas-mermaid-generator",
+  "version": "1.0.0",
+  "description": "Générateur de diagrammes Mermaid avec interface canvas",
+  "main": "index.html",
+  "scripts": {
+    "start": "http-server -p 8081 -c-1",
+    "dev": "http-server -p 8081 -c-1 --cors",
+    "serve": "python -m http.server 8081",
+    "serve8080": "http-server -p 8080 -c-1"
+  },
+  "keywords": [
+    "mermaid",
+    "canvas",
+    "diagram",
+    "generator"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}

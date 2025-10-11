@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mermaid Canvas Generator</title>
+    <link rel="stylesheet" href="styles/default.css">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Mermaid Canvas Generator</h1>
+            <div class="toolbar">
+                <button id="clearCanvas" class="btn btn-secondary">Effacer</button>
+                <button id="exportDiagram" class="btn btn-primary">Exporter</button>
+                <button id="toggleCodeView" class="btn btn-secondary">Voir le code</button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Sidebar with draggable elements -->
+            <aside class="sidebar" id="sidebar">
+                <h3>Éléments de diagramme</h3>
+                <div class="element-categories" id="elementCategories">
+                    <!-- Les catégories seront générées dynamiquement par JavaScript -->
+                </div>
+            </aside>
+
+            <!-- Canvas area -->
+            <main class="canvas-container">
+                <div id="canvas" class="canvas">
+                    <div class="canvas-placeholder">
+                        <p>Glissez des éléments ici pour commencer</p>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Code panel (optional) -->
+            <aside class="code-panel" id="codePanel">
+                <h3>Code Mermaid</h3>
+                <textarea id="mermaidCode" placeholder="Le code Mermaid apparaîtra ici..."></textarea>
+                <div class="code-actions">
+                    <button id="updateFromCode" class="btn btn-secondary">Mettre à jour</button>
+                    <button id="clearCode" class="btn btn-secondary">Effacer</button>
+                </div>
+            </aside>
+        </div>
+
+        <!-- Diagram preview -->
+        <div class="preview-container" id="previewContainer">
+            <div class="preview-header">
+                <h3>Aperçu du diagramme</h3>
+                <button id="closePreview" class="btn-close">×</button>
+            </div>
+            <div class="preview-content">
+                <div id="mermaidPreview" class="mermaid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module">
+        console.log('🔍 Démarrage du script module...');
+
+        // Importer et initialiser l'application
+        import { initializeApp } from './js/app.js';
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            console.log('🚀 Initialisation de l\'application...');
+            console.log('📦 Import de initializeApp réussi');
+
+            try {
+                console.log('⚙️ Appel de initializeApp()...');
+                await initializeApp();
+                console.log('✅ Application initialisée avec succès');
+            } catch (error) {
+                console.error('❌ Erreur lors de l\'initialisation:', error);
+                console.error('Stack:', error.stack);
+            }
+        });
+    </script>
+</body>
+</html>
