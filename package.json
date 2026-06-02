@@ -1,23 +1,18 @@
 {
   "name": "canvas-mermaid-generator",
   "version": "1.0.0",
+  "private": true,
   "description": "Générateur de diagrammes Mermaid avec interface canvas",
-  "main": "index.html",
+  "type": "module",
   "scripts": {
-    "start": "http-server -p 8081 -c-1",
-    "dev": "http-server -p 8081 -c-1 --cors",
-    "serve": "python -m http.server 8081",
-    "serve8080": "http-server -p 8080 -c-1"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
-  "keywords": [
-    "mermaid",
-    "canvas",
-    "diagram",
-    "generator"
-  ],
-  "author": "",
-  "license": "MIT",
+  "dependencies": {
+    "mermaid": "^10.9.1"
+  },
   "devDependencies": {
-    "http-server": "^14.1.1"
+    "vite": "^5.4.10"
   }
 }
