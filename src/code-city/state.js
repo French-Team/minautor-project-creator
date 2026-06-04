@@ -185,7 +185,12 @@ export const actions = {
       x: Number.isFinite(data.x) ? data.x : 0,
       y: Number.isFinite(data.y) ? data.y : 0,
       priority: data.priority || 'medium',
-      icon: data.icon || '📌',
+      description: '',
+      metadata: [],
+      variant: data.variant || null,
+      icon: data.icon || null,
+      color: data.color || null,
+      background: data.background || null,
       ...data,
       id,
     };
@@ -196,7 +201,7 @@ export const actions = {
 
   updateNode(id, patch) {
     const node = state.nodes.find((n) => n.id === id);
-    if (!node) return;
+    if (!node) return null;
     pushHistory();
 
     // Si le type change, on régénère l'ID et on propage aux arêtes + sélection
@@ -219,6 +224,7 @@ export const actions = {
     Object.assign(node, patch);
     recomputeStatus();
     notify({ type: 'node:updated', node });
+    return node;
   },
 
   removeNode(id) {
@@ -237,7 +243,10 @@ export const actions = {
     if (!data.from || !data.to || data.from === data.to) return null;
     // Éviter les doublons
     const exists = state.edges.some(
-      (e) => e.from === data.from && e.to === data.to && (e.label || '') === (data.label || ''),
+      (e) => e.from === data.from && e.to === data.to
+        && (e.fromPort || 'out') === (data.fromPort || 'out')
+        && (e.toPort || 'in') === (data.toPort || 'in')
+        && (e.label || '') === (data.label || ''),
     );
     if (exists) return null;
     pushHistory();
@@ -245,6 +254,8 @@ export const actions = {
       id: data.id || freshEdgeId(),
       from: data.from,
       to: data.to,
+      fromPort: data.fromPort || 'out',
+      toPort: data.toPort || 'in',
       label: data.label || '',
       type: data.type || 'arrow',
     };
@@ -260,6 +271,110 @@ export const actions = {
     state.edges.splice(idx, 1);
     state.selection.edges.delete(id);
     notify({ type: 'edge:removed', id });
+  },
+
+  /**
+   * Supprime toutes les arêtes connectées à un port donné d'un nœud.
+   *   port = 'out'  → supprime les arêtes SORTANTES (from === nodeId)
+   *   port = 'in'   → supprime les arêtes ENTRANTES  (to   === nodeId)
+   *   port = '*'    → supprime TOUTES les arêtes incidentes
+   * Utilisé par le menu du port pour déconnecter puis reconnecter ailleurs.
+   */
+  removeNodeEdges(nodeId, port = '*') {
+    const before = state.edges.length;
+    const toRemove = state.edges.filter((e) => {
+      if (port === '*') return e.from === nodeId || e.to === nodeId;
+      // Port spécifique : on compare le port source ou cible (fallback 'out'/'in' pour anciens edges)
+      if (e.from === nodeId && (e.fromPort || 'out') === port) return true;
+      if (e.to === nodeId && (e.toPort || 'in') === port) return true;
+      return false;
+    });
+    if (toRemove.length === 0) return 0;
+    pushHistory();
+    const removedIds = new Set(toRemove.map((e) => e.id));
+    state.edges = state.edges.filter((e) => !removedIds.has(e.id));
+    for (const id of removedIds) state.selection.edges.delete(id);
+    notify({ type: 'edges:bulk-removed', ids: [...removedIds] });
+    return toRemove.length;
+  },
+
+  /**
+   * Crée un connecteur multiple (hub) rattaché à un port d'un nœud source.
+   * @param {string} sourceNodeId - ID du nœud source
+   * @param {string} sourcePort  - port du nœud source ('in','out','top','bottom')
+   * @param {number} branchCount - nombre de branches (4, 6, 8, 10)
+   * @param {number} x - position X (top-left de l'élément hub)
+   * @param {number} y - position Y
+n   */
+  createHub(sourceNodeId, sourcePort, branchCount, x, y) {
+    pushHistory();
+    const id = freshNodeId('hub');
+    const hub = {
+      id,
+      type: 'hub',
+      label: '',
+      x: Number.isFinite(x) ? x : 0,
+      y: Number.isFinite(y) ? y : 0,
+      hubBranches: branchCount,
+      hubBasePort: sourcePort,
+      priority: 'medium',
+      description: '',
+      metadata: [],
+      variant: null,
+      icon: 'hub',
+      color: null,
+      background: null,
+    };
+    state.nodes.push(hub);
+
+    // Arête de base : relie le nœud source au hub
+    const isOutput = sourcePort === 'out' || sourcePort === 'bottom';
+    const baseEdge = {
+      id: freshEdgeId(),
+      ...(isOutput
+        ? { from: sourceNodeId, to: id, fromPort: sourcePort, toPort: 'hub-base' }
+        : { from: id, to: sourceNodeId, fromPort: 'hub-base', toPort: sourcePort }),
+      label: '',
+      type: 'arrow',
+    };
+    state.edges.push(baseEdge);
+
+    recomputeStatus();
+    notify({ type: 'node:added', node: hub });
+    return hub;
+  },
+
+  /**
+   * Met à jour le nombre de branches d'un hub.
+   * Supprime les arêtes excédentaires si le nombre diminue.
+   */
+  updateHubBranches(hubId, newCount) {
+    const hub = state.nodes.find((n) => n.id === hubId);
+    if (!hub || hub.type !== 'hub') return;
+    const oldCount = hub.hubBranches || 4;
+    if (newCount === oldCount) return;
+
+    pushHistory();
+    hub.hubBranches = newCount;
+
+    // Supprimer les arêtes des branches >= newCount
+    if (newCount < oldCount) {
+      const toRemove = state.edges.filter((e) => {
+        if (e.from === hubId && e.fromPort?.startsWith('hub-')) {
+          return parseInt(e.fromPort.split('-')[1], 10) >= newCount;
+        }
+        if (e.to === hubId && e.toPort?.startsWith('hub-')) {
+          return parseInt(e.toPort.split('-')[1], 10) >= newCount;
+        }
+        return false;
+      });
+      const removeIds = new Set(toRemove.map((e) => e.id));
+      state.edges = state.edges.filter((e) => !removeIds.has(e.id));
+      for (const rid of removeIds) state.selection.edges.delete(rid);
+    }
+
+    recomputeStatus();
+    notify({ type: 'node:updated', node: hub });
   },
 
   clear() {
@@ -285,13 +400,24 @@ export const actions = {
     const newNodes = rawNodes.map((n, i) => {
       const newId = `n${i + 1}`;
       if (n.id && n.id !== newId) idMap.set(n.id, newId);
-      return { ...n, id: newId };
+      return {
+        description: '',
+        metadata: [],
+        variant: null,
+        icon: null,
+        color: null,
+        background: null,
+        ...n,
+        id: newId,
+      };
     });
     const newEdges = rawEdges.map((e, i) => ({
       ...e,
       id: `e${i + 1}`,
       from: idMap.get(e.from) || e.from,
       to: idMap.get(e.to) || e.to,
+      fromPort: e.fromPort || 'out',
+      toPort: e.toPort || 'in',
     }));
 
     state.nodes = newNodes;
@@ -352,8 +478,9 @@ export const actions = {
     notify({ type: 'connection:cancelled' });
   },
 
-  completeConnection(nodeId, _port) {
+  completeConnection(nodeId, targetPort) {
     const fromId = state.connection.from;
+    const fromPort = state.connection.port;
     if (!fromId) return null;
     // Auto-loop interdit
     if (fromId === nodeId) {
@@ -363,7 +490,12 @@ export const actions = {
     // Reset avant d'ajouter (pour ne pas garder l'état pending dans le snap)
     state.connection.from = null;
     state.connection.port = null;
-    const edge = actions.addEdge({ from: fromId, to: nodeId });
+    const edge = actions.addEdge({
+      from: fromId,
+      to: nodeId,
+      fromPort: fromPort || 'out',
+      toPort: targetPort || 'in',
+    });
     notify({ type: 'connection:completed', from: fromId, to: nodeId, edge });
     return edge;
   },

@@ -190,24 +190,4 @@ function setupGridToggleListener(state, gridContainer) {
     }
 }
 
-/**
- * Fonction utilitaire pour l'alignement à la grille
- */
-export function snapToGrid(x, y, gridSize = 20) {
-    return {
-        x: Math.round(x / gridSize) * gridSize,
-        y: Math.round(y / gridSize) * gridSize
-    };
-}
 
-/**
- * Active/désactive l'alignement à la grille
- */
-export function toggleSnapToGrid() {
-    const gridToggleBtn = document.getElementById('grid-toggle');
-    if (gridToggleBtn) {
-        const active = gridToggleBtn.classList.contains('active');
-        return active;
-    }
-    return false;
-}

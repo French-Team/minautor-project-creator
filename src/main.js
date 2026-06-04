@@ -6,7 +6,6 @@
 import mermaid from 'mermaid';
 
 import { initializeApp } from './code-city/code-city.js';
-import { log } from './code-city/utils.js';
 
 mermaid.initialize({
   startOnLoad: false,
@@ -18,7 +17,7 @@ mermaid.initialize({
 window.mermaid = mermaid;
 
 function bootstrap() {
-  log('Démarrage du module principal', 'info');
+  console.log('🚀 Démarrage du module principal');
   initializeApp().catch((error) => {
     console.error("Échec de l'initialisation de l'application", error);
   });

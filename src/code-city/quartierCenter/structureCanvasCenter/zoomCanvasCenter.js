@@ -287,33 +287,3 @@ function showZoomAnimation(type) {
         }, 300);
     }
 }
-
-/**
- * Obtient l'état actuel du zoom
- */
-export function getZoomState() {
-    return {
-        level: 1,
-        position: { x: 0, y: 0 }
-    };
-}
-
-/**
- * Définit le niveau de zoom
- */
-export function setZoomLevel(level) {
-    const state = {
-        level: Math.max(0.1, Math.min(3, level)),
-        position: { x: 0, y: 0 }
-    };
-
-    const canvasContent = document.getElementById('canvas-content');
-    if (canvasContent) {
-        updateCanvasTransform(state, canvasContent);
-    }
-
-    const zoomLevelDisplay = document.getElementById('zoom-level');
-    updateZoomDisplay(state, zoomLevelDisplay);
-
-    return state;
-}

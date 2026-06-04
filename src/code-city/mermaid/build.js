@@ -25,14 +25,235 @@ const SHAPE_BY_TYPE = {
   idea:       { open: '(',     close: ')'  },
   goal:       { open: '(',     close: ')'  },
   success:    { open: '(',     close: ')'  },
+  hub:        { open: '{{',    close: '}}' },
+
+  // Tests & Qualité
+  'test-unit':        { open: '[',  close: ']'  },
+  'test-integration': { open: '[',  close: ']'  },
+  'test-e2e':         { open: '[',  close: ']'  },
+  'test-coverage':    { open: '[',  close: ']'  },
+
+  // DevOps & Infrastructure
+  'devops-ci':         { open: '[',  close: ']'  },
+  'devops-cd':         { open: '[',  close: ']'  },
+  'devops-container':  { open: '[',  close: ']'  },
+  'devops-monitoring': { open: '[',  close: ']'  },
+  'devops-infra':      { open: '[',  close: ']'  },
+
+  // Gestion de dépendances
+  'dep-package': { open: '[[', close: ']]' },
+  'dep-version': { open: '[[', close: ']]' },
+  'dep-mono':    { open: '[[', close: ']]' },
+
+  // Design Patterns
+  'pattern-singleton': { open: '[[', close: ']]' },
+  'pattern-observer':  { open: '[[', close: ']]' },
+  'pattern-factory':   { open: '[[', close: ']]' },
+  'pattern-adapter':   { open: '[[', close: ']]' },
+  'pattern-strategy':  { open: '[[', close: ']]' },
+
+  // Sécurité
+  'sec-auth':     { open: '([', close: '])' },
+  'sec-encrypt':  { open: '([', close: '])' },
+  'sec-rbac':     { open: '([', close: '])' },
+  'sec-firewall': { open: '([', close: '])' },
+
+  // UI/UX Design
+  'uiux-designsystem': { open: '[[', close: ']]' },
+  'uiux-responsive':   { open: '[[', close: ']]' },
+  'uiux-a11y':         { open: '[[', close: ']]' },
+  'uiux-animation':    { open: '[[', close: ']]' },
+
+  // Git & Versioning
+  'git-branch': { open: '([', close: '])' },
+  'git-merge':  { open: '([', close: '])' },
+  'git-pr':     { open: '([', close: '])' },
+
+  // Communication & Messaging
+  'msg-event':        { open: '[/', close: '/]' },
+  'msg-websocket':    { open: '[/', close: '/]' },
+  'msg-rest':         { open: '[/', close: '/]' },
+  'msg-microservice': { open: '[/', close: '/]' },
+
+  // Composants enrichis
+  'component-form':  { open: '[[', close: ']]' },
+  'component-modal': { open: '[[', close: ']]' },
+  'component-table': { open: '[[', close: ']]' },
+
+  // Services enrichis
+  'service-cache': { open: '[(', close: ')]' },
+  'service-queue': { open: '[',  close: ']'  },
+
+  // Environnement enrichi
+  'env-config': { open: '[/', close: '/]' },
+
+  // Architecture (nouvelle)
+  'arch-clean':          { open: '[[', close: ']]' },
+  'arch-hexagonal':      { open: '[[', close: ']]' },
+  'arch-microfrontend':  { open: '[[', close: ']]' },
+  'arch-monolith':       { open: '[[', close: ']]' },
+  'arch-event-driven':   { open: '[[', close: ']]' },
+  'arch-serverless':     { open: '[[', close: ']]' },
+
+  // Data / IA (nouvelle)
+  'data-ml':       { open: '[',  close: ']'  },
+  'data-training': { open: '[',  close: ']'  },
+  'data-pipeline': { open: '[',  close: ']'  },
+  'data-ai':       { open: '[',  close: ']'  },
+
+  // Gestion de projet (nouvelle)
+  'proj-story':  { open: '[', close: ']' },
+  'proj-task':   { open: '[', close: ']' },
+  'proj-sprint': { open: '[', close: ']' },
+  'proj-bug':    { open: '[', close: ']' },
+  'proj-ticket': { open: '[', close: ']' },
+
+  // Services enrichis (intégrations)
+  'service-notif':   { open: '[/', close: '/]' },
+  'service-email':   { open: '[/', close: '/]' },
+  'service-webhook': { open: '[/', close: '/]' },
+
+  // Tests enrichis (qualité de code)
+  'test-lint':    { open: '[', close: ']' },
+  'test-review':  { open: '[', close: ']' },
+  'test-metrics': { open: '[', close: ']' },
+
+  // DevOps enrichis (réseau)
+  'devops-dns': { open: '[', close: ']' },
+  'devops-lb':  { open: '[', close: ']' },
+  'devops-cdn': { open: '[', close: ']' },
+
+  // Design Patterns enrichis
+  'pattern-decorator': { open: '[[', close: ']]' },
+  'pattern-builder':   { open: '[[', close: ']]' },
+  'pattern-composite': { open: '[[', close: ']]' },
+  'pattern-proxy':     { open: '[[', close: ']]' },
+  'pattern-state':     { open: '[[', close: ']]' },
+  'pattern-command':   { open: '[[', close: ']]' },
+
+  // Composants enrichis
+  'component-sidebar':    { open: '[[', close: ']]' },
+  'component-breadcrumb': { open: '[[', close: ']]' },
+  'component-stepper':    { open: '[[', close: ']]' },
+  'component-tabs':       { open: '[[', close: ']]' },
+  'component-drawer':     { open: '[[', close: ']]' },
+  'component-card':       { open: '[[', close: ']]' },
+
+  // Services enrichis
+  'service-search':   { open: '[/', close: '/]' },
+  'service-s3':       { open: '[(', close: ')]' },
+  'service-payment':  { open: '[/', close: '/]' },
+  'service-logging':  { open: '[/', close: '/]' },
+
+  // Sécurité enrichie
+  'sec-oauth2':    { open: '([', close: '])' },
+  'sec-ratelimit': { open: '([', close: '])' },
+  'sec-cors':      { open: '([', close: '])' },
+  'sec-csp':       { open: '([', close: '])' },
+  'sec-audit':     { open: '([', close: '])' },
+
+  // Git enrichi
+  'git-tag':        { open: '([', close: '])' },
+  'git-stash':      { open: '([', close: '])' },
+  'git-cherrypick': { open: '([', close: '])' },
+  'git-revert':     { open: '([', close: '])' },
+
+  // Data / IA enrichis
+  'data-warehouse': { open: '[(', close: ')]' },
+  'data-viz':       { open: '[',  close: ']'  },
+  'data-streaming': { open: '[',  close: ']'  },
+
+  // Architecture enrichie
+  'arch-microservices': { open: '[[', close: ']]' },
+  'arch-layered':       { open: '[[', close: ']]' },
+  'arch-soa':           { open: '[[', close: ']]' },
+  'arch-ddd':           { open: '[[', close: ']]' },
+
+  // UI/UX enrichi
+  'uiux-theming':  { open: '[',  close: ']'  },
+  'uiux-gestures': { open: '[',  close: ']'  },
+  'uiux-loading':  { open: '[',  close: ']'  },
+  'uiux-error':    { open: '[',  close: ']'  },
+
+  // Communication enrichi
+  'msg-grpc':        { open: '[/', close: '/]' },
+  'msg-mqtt':        { open: '[/', close: '/]' },
+  'msg-sse':         { open: '[/', close: '/]' },
+  'msg-graphql-sub': { open: '[/', close: '/]' },
+
+  // Initialisation enrichie
+  'init-angular': { open: '([', close: '])' },
+  'init-svelte':  { open: '([', close: '])' },
+  'init-nestjs':  { open: '([', close: '])' },
+  'init-express': { open: '([', close: '])' },
+
+  // Gestion de projet enrichie
+  'proj-roadmap':    { open: '[', close: ']' },
+  'proj-retro':      { open: '[', close: ']' },
+  'proj-backlog':    { open: '[', close: ']' },
+  'proj-estimation': { open: '[', close: ']' },
+  'proj-milestone':  { open: '[', close: ']' },
+
+  // Gestion de dépendances enrichie
+  'dep-audit':    { open: '[[', close: ']]' },
+  'dep-license':  { open: '[[', close: ']]' },
+  'dep-update':   { open: '[[', close: ']]' },
+  'dep-registry': { open: '[[', close: ']]' },
+  'dep-lockfile': { open: '[[', close: ']]' },
+
+  // Environnement enrichi
+  'env-secrets':       { open: '[/', close: '/]' },
+  'env-feature-flag':  { open: '(',  close: ')'  },
+  'env-staging':       { open: '[/', close: '/]' },
+  'env-local':         { open: '[',  close: ']'  },
+  'env-logging':       { open: '[/', close: '/]' },
+
+  // Tests & Qualité enrichis
+  'test-snapshot':  { open: '[', close: ']' },
+  'test-perf':      { open: '[', close: ']' },
+  'test-mutation':  { open: '[', close: ']' },
+  'test-bdd':       { open: '[', close: ']' },
+
+  // DevOps enrichi
+  'devops-registry':      { open: '[(', close: ')]' },
+  'devops-secrets':       { open: '([', close: '])' },
+  'devops-alerting':      { open: '(',  close: ')'  },
+  'devops-feature-flag':  { open: '([', close: '])' },
 };
 
 const DEFAULT_SHAPE = { open: '[', close: ']' };
 
-/** Échappe un label pour Mermaid (entre guillemets). */
+/** Échappe un label pour Mermaid (entre guillemets).
+ *  - Échappe les guillemets doubles (Mermaid string escape)
+ *  - Convertit les sauts de ligne en <br> (htmlLabels:true permet le rendu HTML)
+ *  - Convertit les tabs en espaces (sinon le parser Mermaid les interprète mal)
+ *  - Trim les espaces superflus
+ *  - Filet de sécurité : si le label est vide, on met un placeholder
+ */
 function quoteLabel(label) {
-  const s = String(label ?? '').replace(/"/g, '\\"');
+  let s = String(label ?? '')
+    .replace(/\r\n?/g, '\n')        // normalise les fins de ligne
+    .replace(/"/g, '\\"')           // échappe les guillemets
+    .replace(/\n/g, '<br>')         // sauts de ligne → <br> (htmlLabels)
+    .replace(/\t/g, '    ')         // tabs → 4 espaces
+    .trim();
+  if (s === '') s = ' ';
   return `"${s}"`;
+}
+
+/** Échappe du texte "plain" pour l'inclure dans un label Mermaid rendu en
+ *  HTML. Contrairement à quoteLabel, on neutralise les chevrons pour éviter
+ *  toute injection HTML/SVG côté aperçu. Les sauts de ligne sont
+ *  convertis en <br>, les guillemets échappés pour Mermaid. */
+function quotePlainLabel(text) {
+  let s = String(text ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[<>]/g, (c) => (c === '<' ? '&lt;' : '&gt;'))
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '<br>')
+    .replace(/\t/g, '    ')
+    .trim();
+  return s; // pas de wrap guillemets, ce texte est concaténé dans un label déjà quoté
 }
 
 /** Formate un identifiant pour Mermaid. Les IDs "exotiques" (avec des
@@ -44,9 +265,30 @@ function toMermaidId(id) {
   return `"${String(id).replace(/"/g, '\\"')}"`;
 }
 
-/** Renvoie la forme Mermaid pour un type donné. */
+/** Renvoie la forme Mermaid pour un type donné.
+ *  - Les types de la palette flowchart ont un mapping explicite.
+ *  - Les types "projet" sont mappés par préfixe (component-* → module,
+ *    service-database → storage, le reste → process).
+ *  - Tout type inconnu tombe sur le DEFAULT_SHAPE (rectangle). */
 function shapeFor(type) {
-  return SHAPE_BY_TYPE[type] || DEFAULT_SHAPE;
+  if (SHAPE_BY_TYPE[type]) return SHAPE_BY_TYPE[type];
+  if (type.startsWith('component-')) return SHAPE_BY_TYPE.module;
+  if (type.startsWith('test-')) return DEFAULT_SHAPE;
+  if (type.startsWith('devops-')) return DEFAULT_SHAPE;
+  if (type.startsWith('dep-')) return SHAPE_BY_TYPE.module;
+  if (type.startsWith('pattern-')) return SHAPE_BY_TYPE.module;
+  if (type.startsWith('sec-')) return SHAPE_BY_TYPE.start;
+  if (type.startsWith('uiux-')) return SHAPE_BY_TYPE.module;
+  if (type.startsWith('git-')) return SHAPE_BY_TYPE.start;
+  if (type.startsWith('msg-')) return SHAPE_BY_TYPE.document;
+  if (type.startsWith('arch-')) return SHAPE_BY_TYPE.module;
+  if (type.startsWith('data-')) return DEFAULT_SHAPE;
+  if (type.startsWith('proj-')) return DEFAULT_SHAPE;
+  if (type.startsWith('service-notif') || type.startsWith('service-email') || type.startsWith('service-webhook')) return SHAPE_BY_TYPE.document;
+  if (type === 'service-database' || type === 'service-cache') return SHAPE_BY_TYPE.storage;
+  if (type === 'service-queue') return DEFAULT_SHAPE;
+  if (type === 'env-config') return SHAPE_BY_TYPE.document;
+  return DEFAULT_SHAPE;
 }
 
 /**
@@ -58,18 +300,55 @@ export function buildMermaidCode(graph) {
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
 
+  // --- Exclure les hubs : nœuds canvas-only, pas d'équivalent Mermaid ---
+  const hubIds = new Set(nodes.filter(n => n.type === 'hub').map(n => n.id));
+
+  // Résoudre les connexions hub → arêtes directes source→target
+  // 1) Trouver l'arête "source → hub" (via port hub-base)
+  // 2) Trouver les arêtes "hub → target" (via ports hub-N)
+  // 3) Générer des arêtes directes source→target, sans le hub
+  const extraEdges = [];
+  for (const hubId of hubIds) {
+    const baseEdge = edges.find(e =>
+      e.to === hubId && (e.toPort || 'in') === 'hub-base'
+    );
+    if (!baseEdge) continue;
+    const sourceId = baseEdge.from;
+    for (const e of edges) {
+      if (e.from === hubId && (e.fromPort || '').startsWith('hub-') && e.to && e.to !== hubId) {
+        extraEdges.push({ from: sourceId, to: e.to, label: e.label || '' });
+      }
+    }
+  }
+
   const lines = ['graph TD'];
 
   // 1) déclarations de nœuds (pour donner un libellé propre à chaque)
   for (const n of nodes) {
+    if (hubIds.has(n.id)) continue; // exclure les hubs
     const shape = shapeFor(n.type);
     const id = toMermaidId(n.id);
-    lines.push(`    ${id}${shape.open}${quoteLabel(n.label || n.type)}${shape.close}`);
+    const baseLabel = n.label || n.type;
+    const desc = quotePlainLabel(n.description);
+    // Le libellé est assemblé : libellé + (optionnel) <br><small>description</small>
+    const labelHtml = desc ? `${baseLabel}<br><small>${desc}</small>` : baseLabel;
+    lines.push(`    ${id}${shape.open}${quoteLabel(labelHtml)}${shape.close}`);
   }
 
-  // 2) arêtes
+  // 2) arêtes (hors hubs)
   for (const e of edges) {
     if (!e.from || !e.to) continue;
+    if (hubIds.has(e.from) || hubIds.has(e.to)) continue;
+    const from = toMermaidId(e.from);
+    const to = toMermaidId(e.to);
+    if (e.label) {
+      lines.push(`    ${from} -->|${quoteLabel(e.label)}| ${to}`);
+    } else {
+      lines.push(`    ${from} --> ${to}`);
+    }
+  }
+  // Arêtes directes résolues depuis les hubs
+  for (const e of extraEdges) {
     const from = toMermaidId(e.from);
     const to = toMermaidId(e.to);
     if (e.label) {

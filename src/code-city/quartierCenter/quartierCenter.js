@@ -1,13 +1,21 @@
 /**
- * Quartier Center - Canvas principal
- * Gère le canvas central pour l'édition visuelle des diagrammes
+ * Quartier Center - Canvas principal + Aperçu Mermaid
+ *
+ * La zone centre est onglettée :
+ *   - Éditeur : toolbar + canvas (drag & drop, nœuds, ports, menus)
+ *   - Aperçu  : rendu Mermaid pleine zone (previewPanel.js)
+ *
+ * L'aperçu se rafraîchit en background pour un switch instantané.
+ * Un clic sur un nœud du rendu Mermaid bascule vers l'éditeur,
+ * sélectionne le nœud et centre la vue dessus.
  *
  * La structure HTML est définie dans `code-city.js` (source unique de vérité).
  * Ce module se contente d'initialiser les comportements sur les nœuds du DOM existants.
  */
 
 import { initializeStructureCanvasCenter } from './structureCanvasCenter/structureCanvasCenter.js';
-import { initializeFonctionsCanvasCenter } from './fonctionsCanvasCenter/fonctionsCanvasCenter.js';
+import { initializeCenterTabs } from './centerTabs.js';
+import { initializePreviewPanel } from './previewPanel.js';
 import { initializeCanvasRenderer } from '../render/canvasRenderer.js';
 
 /**
@@ -17,11 +25,15 @@ export async function initializeQuartierCenter() {
     console.log('🎯 Initialisation du quartier Center...');
 
     try {
-        // Le renderer canvas doit être initialisé APRÈS la structure
-        // (grille, zoom) pour pouvoir s'y brancher.
+        // 1) Onglets Éditeur / Aperçu
+        initializeCenterTabs();
+
+        // 2) Structure du canvas + renderer
         await initializeStructureCanvasCenter();
-        await initializeFonctionsCanvasCenter();
         initializeCanvasRenderer();
+
+        // 3) Aperçu Mermaid (rendu en background, refresh auto)
+        await initializePreviewPanel();
 
         console.log('✅ Quartier Center initialisé avec succès');
     } catch (error) {

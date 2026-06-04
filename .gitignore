@@ -6,3 +6,5 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+test-results/
+playwright-report/

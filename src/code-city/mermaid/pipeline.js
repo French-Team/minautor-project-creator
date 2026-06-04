@@ -107,7 +107,7 @@ function applyUserEdit(code) {
       x,
       y,
       priority: 'medium',
-      icon: '📌',
+
     };
   });
 
