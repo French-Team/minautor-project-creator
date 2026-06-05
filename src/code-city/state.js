@@ -112,7 +112,7 @@ export function subscribe(fn) {
 
 export function snapshot() {
   return {
-    nodes: state.nodes.map((n) => ({ ...n })),
+    nodes: state.nodes.map((n) => ({ ...n, properties: n.properties ? { ...n.properties } : {} })),
     edges: state.edges.map((e) => ({ ...e })),
     selection: {
       nodes: new Set(state.selection.nodes),
@@ -187,6 +187,7 @@ export const actions = {
       priority: data.priority || 'medium',
       description: '',
       metadata: [],
+      properties: {},
       variant: data.variant || null,
       icon: data.icon || null,
       color: data.color || null,
@@ -320,6 +321,7 @@ n   */
       priority: 'medium',
       description: '',
       metadata: [],
+      properties: {},
       variant: null,
       icon: 'hub',
       color: null,
@@ -403,6 +405,7 @@ n   */
       return {
         description: '',
         metadata: [],
+        properties: {},
         variant: null,
         icon: null,
         color: null,

@@ -89,9 +89,16 @@ function applyUserEdit(code) {
   const newNodes = parsed.nodes.map((n) => {
     const existing = oldById.get(n.id);
     if (existing) {
-      return { ...existing, label: n.label };
+      // Si le code Mermaid contient une ligne %% @props explicite pour
+      // ce nœud, on remplace les propriétés par celles du code.
+      // Si la ligne a été supprimée (n.properties === undefined), on
+      // vide les propriétés pour refléter la suppression.
+      const mergedProps = n.properties !== undefined ? n.properties : {};
+      return { ...existing, label: n.label, properties: mergedProps };
     }
-    // Trouve un slot libre
+    // Nouveau nœud : on initialise les propriétés depuis le code
+    // et on place sur la grille
+    const parsedProps = n.properties !== undefined ? n.properties : {};
     let x = 0;
     let y = 0;
     while (usedPositions.has(`${Math.round(x / GRID)},${Math.round(y / GRID)}`)) {
@@ -107,7 +114,7 @@ function applyUserEdit(code) {
       x,
       y,
       priority: 'medium',
-
+      properties: parsedProps,
     };
   });
 
@@ -138,6 +145,15 @@ function graphsEqual(a, b) {
     const y = b.nodes.find((n) => n.id === x.id);
     if (!y) return false;
     if (x.label !== y.label || x.type !== y.type || x.x !== y.x || x.y !== y.y) return false;
+    // Comparer les propriétés
+    const xp = x.properties || {};
+    const yp = y.properties || {};
+    const xKeys = Object.keys(xp);
+    const yKeys = Object.keys(yp);
+    if (xKeys.length !== yKeys.length) return false;
+    for (const k of xKeys) {
+      if (xp[k] !== yp[k]) return false;
+    }
   }
   for (let i = 0; i < a.edges.length; i++) {
     const x = a.edges[i];

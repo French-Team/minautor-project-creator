@@ -37,7 +37,7 @@ import { getIcon } from '../../../icons.js';
  * `variants` du type concerné — le mécanisme (select + drag + couleur) le
  * prend en charge automatiquement.
  */
-const PALETTE = [
+export const PALETTE = [
 
   /* ================================================================== */
   /*  🎨 FONDAMENTAUX                                                    */

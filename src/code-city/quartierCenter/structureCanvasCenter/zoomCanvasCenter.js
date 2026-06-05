@@ -169,6 +169,10 @@ function setupZoomEventListeners(state, canvasContent) {
             zoomIn(state, canvasContent, centerX, centerY);
         } else if (direction === 'out') {
             zoomOut(state, canvasContent, centerX, centerY);
+        } else if (direction === 'reset') {
+            state.level = 1;
+            state.position = { x: 0, y: 0 };
+            updateCanvasTransform(state, canvasContent);
         }
 
         const zoomLevelDisplay = document.getElementById('zoom-level');

@@ -73,9 +73,36 @@ function flushSave() {
     view: state.view,
   };
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    const json = JSON.stringify(data);
+    checkStorageQuota(json.length);
+    localStorage.setItem(STORAGE_KEY, json);
   } catch (err) {
     console.warn('⚠️ Écriture localStorage échouée:', err);
+    if (err.name === 'QuotaExceededError' || err.code === 22) {
+      actions.setStatusMessage('Espace localStorage insuffisant — données non sauvegardées', 'warning', 5000);
+    }
+  }
+}
+
+/**
+ * Vérifie l'espace disponible dans le localStorage.
+ * Si > 80% du quota est utilisé, affiche un avertissement.
+ */
+async function checkStorageQuota(dataSize) {
+  try {
+    if (!navigator.storage?.estimate) return;
+    const { usage, quota } = await navigator.storage.estimate();
+    if (!quota) return;
+    const usagePercent = ((usage + dataSize) / quota) * 100;
+    if (usagePercent > 80) {
+      actions.setStatusMessage(
+        `localStorage ${Math.round(usagePercent)}% plein — envisagez de purger d'anciens diagrammes`,
+        'warning',
+        5000,
+      );
+    }
+  } catch (_) {
+    // estimate() n'est pas toujours disponible
   }
 }
 

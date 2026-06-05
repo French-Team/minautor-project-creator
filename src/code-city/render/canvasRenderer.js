@@ -100,9 +100,13 @@ function renderAll() {
 function syncNodes(nodes) {
   const incomingIds = new Set(nodes.map((n) => n.id));
   // Supprimer les éléments du DOM qui ne sont plus dans le state
+  // (avec animation de sortie si possible)
   for (const [id, el] of nodeElements) {
     if (!incomingIds.has(id)) {
-      el.remove();
+      el.classList.add('is-removing');
+      const removeDelay = 200; // ms, matching node-exit animation duration
+      el.addEventListener('animationend', () => el.remove(), { once: true });
+      setTimeout(() => { if (el.parentNode) el.remove(); }, removeDelay + 50);
       nodeElements.delete(id);
     }
   }
@@ -173,6 +177,11 @@ function updateNodeElement(el, node) {
     el.dataset.color = node.color;
   } else {
     delete el.dataset.color;
+  }
+  if (node.priority) {
+    el.dataset.priority = node.priority;
+  } else {
+    delete el.dataset.priority;
   }
   el.style.left = `${node.x}px`;
   el.style.top = `${node.y}px`;
@@ -577,6 +586,14 @@ function createNodeElement(node) {
 
   // ----- Nœud : clic = menu nœud (sélectionne), mousedown+drag = déplacer -----
   el.addEventListener('mousedown', (e) => onNodeMouseDown(e, node.id));
+
+  // ----- Nœud : double-clic = ouvrir panneau Propriétés -----
+  el.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.port') || e.target.closest('.node-menu') || e.target.closest('.port-menu')) return;
+    e.stopPropagation();
+    actions.selectNode(node.id);
+    openPropertiesAndFocusLabel();
+  });
 
   // ----- Nœud : sortie de souris = ferme le menu (avec délai pour laisser
   // le temps de survoler le menu port, qui est positionné en dehors du nœud).
@@ -1106,20 +1123,32 @@ function startNodeDrag(nodeId, startEvent) {
   document.addEventListener('mouseup', onNodeDragEnd, { once: true });
 }
 
+let dragRafId = null; // requestAnimationFrame handle pour optimiser le drag
+let dragPendingEvent = null; // dernier événement mousemove en attente de rendu
+
 function onNodeDragMove(e) {
   if (!interaction || interaction.type !== 'drag') return;
+  // On stocke l'événement et on requestAnimationFrame pour lisser le rendu
+  dragPendingEvent = e;
+  if (!dragRafId) {
+    dragRafId = requestAnimationFrame(flushDragFrame);
+  }
+}
+
+function flushDragFrame() {
+  dragRafId = null;
+  const e = dragPendingEvent;
+  dragPendingEvent = null;
+  if (!e || !interaction || interaction.type !== 'drag') return;
+
   const { nodeId, offsetX, offsetY } = interaction;
   const state = getState();
   const { zoom, pan } = state.view;
   const canvasRect = canvasContent.getBoundingClientRect();
   const x = (e.clientX - canvasRect.left) / zoom - pan.x - offsetX;
   const y = (e.clientY - canvasRect.top) / zoom - pan.y - offsetY;
-  // Mutation directe ici est OK (déjà dans un sous-flux d'interaction),
-  // mais on passe par l'action pour respecter la convention et garder
-  // l'historique propre : on accumule les positions et on commit au mouseup.
   if (!interaction._lastPos) interaction._lastPos = { x, y };
   interaction._lastPos = { x, y };
-  // Mise à jour visuelle directe (sans push history à chaque frame)
   const el = nodeElements.get(nodeId);
   if (el) {
     el.classList.add('is-dragging');
@@ -1131,17 +1160,13 @@ function onNodeDragMove(e) {
     }
     el.style.left = `${nx}px`;
     el.style.top = `${ny}px`;
-    // Position live (utilisée par nodeAnchor pour les arêtes connectées)
     livePositions.set(nodeId, { x: nx, y: ny });
-    // Re-render des arêtes connectées pour qu'elles suivent le nœud
     for (const edge of state.edges) {
       if (edge.from === nodeId || edge.to === nodeId) {
         const group = edgeElements.get(edge.id);
         if (group) updateEdgeElement(group, edge);
       }
     }
-    // Pendant un drag, la ligne fantôme d'une connexion en cours doit
-    // aussi suivre l'anchor source
     if (dragConnection) {
       const ghost = dragConnection.ghostEl;
       const fromNode = state.nodes.find((n) => n.id === dragConnection.fromId);
@@ -1222,6 +1247,8 @@ function handleCreateHub(nodeId, port, branchCount) {
 
 function onNodeDragEnd() {
   document.removeEventListener('mousemove', onNodeDragMove);
+  if (dragRafId) { cancelAnimationFrame(dragRafId); dragRafId = null; }
+  dragPendingEvent = null;
   if (!interaction || interaction.type !== 'drag') return;
   const { nodeId, _lastPos } = interaction;
   const el = nodeElements.get(nodeId);
@@ -1231,6 +1258,5 @@ function onNodeDragEnd() {
     actions.updateNode(nodeId, { x: _lastPos.x, y: _lastPos.y });
   }
   interaction = null;
-  // Re-render des arêtes (les positions des nœuds ont changé)
   syncEdges(getState().edges);
 }

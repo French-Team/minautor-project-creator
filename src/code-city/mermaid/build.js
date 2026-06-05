@@ -323,7 +323,24 @@ export function buildMermaidCode(graph) {
 
   const lines = ['graph TD'];
 
-  // 1) déclarations de nœuds (pour donner un libellé propre à chaque)
+  // 1) Annotations propriétés (%% @props nodeId {json})
+  //    Visibles dans le code mais invisibles dans le rendu Mermaid.
+  for (const n of nodes) {
+    if (hubIds.has(n.id)) continue;
+    const props = n.properties;
+    if (props && typeof props === 'object' && Object.keys(props).length > 0) {
+      // Filtrer les valeurs vides/null/undefined
+      const cleaned = {};
+      for (const [k, v] of Object.entries(props)) {
+        if (v != null && v !== '') cleaned[k] = v;
+      }
+      if (Object.keys(cleaned).length > 0) {
+        lines.push(`    %% @props ${toMermaidId(n.id)} ${JSON.stringify(cleaned)}`);
+      }
+    }
+  }
+
+  // 2) déclarations de nœuds (pour donner un libellé propre à chaque)
   for (const n of nodes) {
     if (hubIds.has(n.id)) continue; // exclure les hubs
     const shape = shapeFor(n.type);
@@ -335,7 +352,7 @@ export function buildMermaidCode(graph) {
     lines.push(`    ${id}${shape.open}${quoteLabel(labelHtml)}${shape.close}`);
   }
 
-  // 2) arêtes (hors hubs)
+  // 3) arêtes (hors hubs)
   for (const e of edges) {
     if (!e.from || !e.to) continue;
     if (hubIds.has(e.from) || hubIds.has(e.to)) continue;
@@ -347,7 +364,7 @@ export function buildMermaidCode(graph) {
       lines.push(`    ${from} --> ${to}`);
     }
   }
-  // Arêtes directes résolues depuis les hubs
+  // 4) Arêtes directes résolues depuis les hubs
   for (const e of extraEdges) {
     const from = toMermaidId(e.from);
     const to = toMermaidId(e.to);
@@ -480,7 +497,8 @@ export function parseMermaidCode(code) {
   }
 
   const lines = code.split(/\r?\n/);
-  const declared = new Map(); // id -> label
+  const declared = new Map(); // id -> { label, type }
+  const propsMap = new Map(); // id -> { properties }
 
   // Trouver l'en-tête `graph TD` ou `flowchart TD`
   const headerIdx = lines.findIndex((l) => /^\s*(graph|flowchart)\s+/i.test(l));
@@ -488,8 +506,26 @@ export function parseMermaidCode(code) {
     return { nodes: [], edges: [], error: 'En-tête `graph TD` manquant' };
   }
 
-  // Première passe : déclarations de nœuds
+  // Première passe : annotations propriétés + déclarations de nœuds
   for (let i = headerIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+
+    // Parser les lignes %% @props nodeId {json}
+    const propsMatch = trimmed.match(/^%%\s*@props\s+([A-Za-z_][A-Za-z0-9_-]*|"[^"]+")\s+(.+)$/);
+    if (propsMatch) {
+      const rawId = propsMatch[1];
+      const id = rawId.startsWith('"') ? rawId.slice(1, -1) : rawId;
+      try {
+        const props = JSON.parse(propsMatch[2]);
+        if (props && typeof props === 'object') {
+          propsMap.set(id, props);
+        }
+      } catch (_) {
+        // JSON invalide → on ignore silencieusement
+      }
+      continue;
+    }
+
     const node = parseNodeLine(lines[i]);
     if (node) declared.set(node.id, { label: node.label, type: inferType(node.open, node.close) });
   }
@@ -511,11 +547,17 @@ export function parseMermaidCode(code) {
   const nodes = [];
   for (const id of ids) {
     const declaredNode = declared.get(id);
-    nodes.push({
+    const node = {
       id,
       label: declaredNode?.label ?? id,
       type: declaredNode?.type ?? 'process',
-    });
+    };
+    // N'inclure properties QUE si une ligne %% @props explicite existait.
+    // L'absence de la clé indique au pipeline de vider les propriétés.
+    if (propsMap.has(id)) {
+      node.properties = propsMap.get(id);
+    }
+    nodes.push(node);
   }
 
   return { nodes, edges, error: null };

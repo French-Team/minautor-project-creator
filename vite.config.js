@@ -2,12 +2,12 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   server: {
-    port: 8081,
+    port: 5173,
     strictPort: true,
     open: false
   },
   preview: {
-    port: 8081,
+    port: 5173,
     strictPort: true
   },
   build: {

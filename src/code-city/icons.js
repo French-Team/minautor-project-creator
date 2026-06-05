@@ -376,6 +376,14 @@ export function iconRefresh() {
   `);
 }
 
+/** { } Braces — JSON export */
+export function iconJson() {
+  return svg(`
+    <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"/>
+    <path stroke-linecap="round" stroke-linejoin="round" d="M3 3h.01M3 21h.01"/>
+  `);
+}
+
 /** Download arrow — chevron de droite des cartes d'export */
 export function iconDownload() {
   return svg(`
@@ -432,6 +440,7 @@ const ICON_MAP = {
   code:  iconCode,
   photo: iconPhoto,
   cube:  iconCube,
+  json:  iconJson,
 
   // New palette icons
   tag:         iconTag,

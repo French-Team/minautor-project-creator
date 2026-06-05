@@ -15,6 +15,8 @@
 
 import { getState, subscribe, actions } from '../state.js';
 import { buildMermaidCode } from '../mermaid/build.js';
+import { getSchemaForType } from '../propertySchemas.js';
+import { PALETTE } from '../quartierLeft/fonctionsMermaidLeft/menuMermaidActionsLeft/menuMermaidActionsLeft.js';
 
 export async function initializeCenterAuxPanels() {
   console.log('📋 Initialisation des panneaux Code & Propriétés…');
@@ -81,10 +83,13 @@ function renderProperties() {
     return;
   }
 
-  const TYPES = [
-    'start','end','process','decision','document','user','storage',
-    'module','important','attention','idea','goal','success',
-  ];
+  // Tous les types depuis la palette (~120 types, triés par catégorie)
+  const ALL_TYPES = [];
+  for (const cat of PALETTE) {
+    for (const item of cat.items) {
+      ALL_TYPES.push({ type: item.type, label: item.label, category: cat.label });
+    }
+  }
   const PRIORITIES = ['low','medium','high','critical'];
   const metadata = Array.isArray(node.metadata) ? node.metadata : [];
   const description = typeof node.description === 'string' ? node.description : '';
@@ -108,7 +113,7 @@ function renderProperties() {
           <div class="prop-field">
             <label for="prop-type">Type</label>
             <select id="prop-type">
-              ${TYPES.map((t) => `<option value="${t}" ${node.type === t ? 'selected' : ''}>${t}</option>`).join('')}
+              ${ALL_TYPES.map((t) => `<option value="${t.type}" ${node.type === t.type ? 'selected' : ''}>${t.label} (${t.category})</option>`).join('')}
             </select>
           </div>
           <div class="prop-field">
@@ -118,6 +123,11 @@ function renderProperties() {
             </select>
           </div>
         </div>
+      </div>
+
+      <div class="prop-section prop-section--business" id="prop-business-section">
+        <div class="prop-section__title">Propriétés métier</div>
+        ${renderBusinessFields(node)}
       </div>
 
       <div class="prop-section">
@@ -179,6 +189,36 @@ function metadataRowHtml(index, m) {
   `;
 }
 
+/**
+ * Rendu dynamique des champs de propriétés métier selon la catégorie du type.
+ */
+function renderBusinessFields(node) {
+  const schema = getSchemaForType(node.type);
+  if (!schema || schema.fields.length === 0) {
+    return '<div class="prop-hint">Pas de propriétés spécifiques pour ce type.</div>';
+  }
+  const props = node.properties || {};
+  return schema.fields.map((f) => {
+    const value = props[f.key] != null ? String(props[f.key]) : '';
+    const id = `prop-biz-${f.key}`;
+    const label = `<label for="${id}">${escapeHtml(f.label)}</label>`;
+    if (f.type === 'select') {
+      const opts = (f.options || []).map((o) =>
+        `<option value="${escapeAttr(o)}" ${value === o ? 'selected' : ''}>${escapeHtml(o)}</option>`,
+      ).join('');
+      return `<div class="prop-field"><label for="${id}">${escapeHtml(f.label)}</label><select id="${id}" class="prop-biz-input" data-key="${escapeAttr(f.key)}">${opts}</select></div>`;
+    }
+    if (f.type === 'textarea') {
+      return `<div class="prop-field"><label for="${id}">${escapeHtml(f.label)}</label><textarea id="${id}" class="prop-input prop-textarea prop-biz-input" data-key="${escapeAttr(f.key)}" placeholder="${escapeAttr(f.placeholder || '')}" rows="3">${escapeHtml(value)}</textarea></div>`;
+    }
+    if (f.type === 'date') {
+      return `<div class="prop-field"><label for="${id}">${escapeHtml(f.label)}</label><input type="date" id="${id}" class="prop-input prop-biz-input" data-key="${escapeAttr(f.key)}" value="${escapeAttr(value)}" /></div>`;
+    }
+    // text (default)
+    return `<div class="prop-field"><label for="${id}">${escapeHtml(f.label)}</label><input type="text" id="${id}" class="prop-input prop-biz-input" data-key="${escapeAttr(f.key)}" placeholder="${escapeAttr(f.placeholder || '')}" value="${escapeAttr(value)}" /></div>`;
+  }).join('');
+}
+
 function bindPropertyInputs(id) {
   const form = document.getElementById('properties-form');
   if (!form) return;
@@ -216,7 +256,18 @@ function bindPropertyInputs(id) {
   }
 
   typeSelect?.addEventListener('change', () => {
-    const updated = actions.updateNode(currentId, { type: typeSelect.value });
+    const oldNode = getState().nodes.find((n) => n.id === currentId);
+    const oldCat = oldNode ? getSchemaForType(oldNode.type).fields.map((f) => f.key) : [];
+    const newCat = getSchemaForType(typeSelect.value).fields.map((f) => f.key);
+    // Conserver les propriétés compatibles (champs qui existent dans les deux schémas)
+    const compatibleKeys = new Set(oldCat.filter((k) => newCat.includes(k)));
+    const preserved = {};
+    if (oldNode?.properties) {
+      for (const [k, v] of Object.entries(oldNode.properties)) {
+        if (compatibleKeys.has(k)) preserved[k] = v;
+      }
+    }
+    const updated = actions.updateNode(currentId, { type: typeSelect.value, properties: preserved });
     // L'ID a été régénéré : on suit le nouveau pour les saves suivants
     if (updated) currentId = updated.id;
   });
@@ -308,6 +359,41 @@ function bindPropertyInputs(id) {
         i === index ? { ...m, [field]: t.value } : m,
       );
       actions.updateNode(currentId, { metadata: next });
+    });
+  }
+
+  // --- Propriétés métier (champs dynamiques par catégorie) ------
+  const bizSection = form.querySelector('#prop-business-section');
+  if (bizSection) {
+    // Debounce pour les champs texte/textarea (évite de spammer l'historique)
+    const debouncedBizSave = debounce((input) => {
+      const key = input.dataset.key;
+      if (!key) return;
+      const node = getState().nodes.find((n) => n.id === currentId);
+      if (!node) return;
+      actions.updateNode(currentId, {
+        properties: { ...(node.properties || {}), [key]: input.value },
+      });
+    }, 200);
+    // Save immédiat pour les selects et dates
+    const immediateBizSave = (input) => {
+      const key = input.dataset.key;
+      if (!key) return;
+      const node = getState().nodes.find((n) => n.id === currentId);
+      if (!node) return;
+      actions.updateNode(currentId, {
+        properties: { ...(node.properties || {}), [key]: input.value },
+      });
+    };
+    bizSection.addEventListener('input', (e) => {
+      if (e.target.matches('.prop-biz-input')) {
+        debouncedBizSave(e.target);
+      }
+    });
+    bizSection.addEventListener('change', (e) => {
+      if (e.target.matches('.prop-biz-input')) {
+        immediateBizSave(e.target);
+      }
     });
   }
 }
