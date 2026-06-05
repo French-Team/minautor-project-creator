@@ -114,6 +114,85 @@ Dans le panneau d'export, après le ZIP, ajouter un lien **"🤖 Générer la do
 2. Envoie : *"Génère la documentation complète pour le mode [selected/subtree/full]"*
 3. La réponse est rendue en Markdown dans le chat
 
+#### B4. Complétion inline (FIM — Fill-in-the-Middle)
+
+Un mode spécial dans le panneau chat qui utilise `fimCompletion()` de la [Spec 1 (Providers)](SPEC-1-PROVIDERS.md) pour compléter du code directement depuis l'onglet **Code**.
+
+**Prérequis** : Le provider doit être Mistral/Codestral (seul provider supportant le FIM).
+
+**Déclenchement** :
+1. L'utilisateur sélectionne du texte dans l'onglet **Code** (textarea `#code-preview`)
+2. Un bouton flottant **"🤖 Compléter"** apparaît au-dessus de la sélection
+3. Le clic envoie la sélection à Mina via `fimCompletion()`
+4. Le résultat est inséré dans le textarea au curseur
+
+```
+┌──────────────────────────────────────┐
+│  Code (onglet)                       │
+│  ─────────────────────               │
+│  flowchart TD                        │
+│    A[Frontend] --> B[API Auth]       │
+│    B --> C[DB]                       │
+│    B --> D[▶ COMPLÉTER ICI]          │  ← Sélection = prefix
+│    C --> E[Cache]                    │  ← Texte après = suffix
+│                                      │
+│  ┌──────────────────┐                │
+│  │ 🤖 Compléter     │ ← Bouton FIM  │
+│  └──────────────────┘                │
+└──────────────────────────────────────┘
+```
+
+**Comportement détaillé** :
+
+| Étape | Action |
+|-------|--------|
+| 1 | L'utilisateur sélectionne du texte dans `#code-preview` |
+| 2 | Un bouton "🤖 Compléter" apparaît (positionné au-dessus de la sélection) |
+| 3 | Clic sur le bouton → envoie `fimCompletion(provider, prefix, suffix)` |
+| 4 | `prefix` = texte AVANT la sélection, `suffix` = texte APRÈS la sélection |
+| 5 | Indicateur "Mina complète…" pendant l'appel |
+| 6 | Le code généré est inséré au curseur (remplace la sélection ou s'ajoute) |
+| 7 | La complétion est rendue en surbrillance temporaire (animation `fim-highlight`) |
+
+**Mode alternative** : L'utilisateur peut aussi déclencher la complétion via :
+- **Raccourci clavier** : `Ctrl+Shift+C` (quand le focus est dans le textarea Code)
+- **Menu contextuel** : clic droit dans le textarea → "🤖 Compléter avec Mina"
+
+**Sécurité** :
+- Si le provider n'est pas Mistral/Codestral, le bouton "Compléter" est grisé avec tooltip "FIM disponible uniquement avec Codestral"
+- Si aucun provider n'est configuré, le bouton ouvre le panneau Providers
+- Timeout 15s pour les appels FIM (plus court que le chat car c'est de la complétion inline)
+
+**UI dans le panneau chat** :
+
+Le panneau chat affiche aussi un indicateur quand une complétion FIM est en cours :
+
+```
+┌─────────────────────────────────────┐
+│ 🤖 Assistant Mina              [✕] │
+├─────────────────────────────────────┤
+│                                     │
+│  ┌───────────────────────────────┐  │
+│  │ 🤖 Complétion FIM en cours…  │  │
+│  │ Prefix: 120 caractères       │  │
+│  │ Suffix: 45 caractères        │  │
+│  └───────────────────────────────┘  │
+│                                     │
+│  ── Actions rapides ────────────── │  │  [📊 Analyser] [💡 Suggérer]       │
+│  [📝 Doc] [🔍 Enrichir]            │
+│  [⚡ Compléter code] ← FIM         │
+│                                     │
+├─────────────────────────────────────┤
+│ ┌─────────────────────────────┐ [➤] │
+│ │ Pose ta question…           │      │
+│ └─────────────────────────────┘      │
+└─────────────────────────────────────┘
+```
+
+**Action rapide "⚡ Compléter code"** :
+- Visible uniquement si le focus est dans l'onglet Code
+- Si le focus est ailleurs : "Sélectionnez du texte dans l'onglet Code d'abord"
+
 ---
 
 ## Architecture technique
@@ -128,6 +207,7 @@ src/code-city/ai/
 ├── chatHistory.js           — (Spec 2) Historique messages
 ├── quickActions.js          — (Spec 2) Actions rapides prédéfinies
 ├── chatPanel.js             — NOUVEAU : Panneau chat UI
+├── fimHandler.js            — NOUVEAU : Complétion inline FIM (Codestral)
 └── contextBuilder.js        — NOUVEAU : Construction du contexte canvas
 ```
 
@@ -213,6 +293,121 @@ async function sendMessage(text) {
 }
 
 import { QUICK_ACTIONS } from './quickActions.js';
+```
+
+### B. `fimHandler.js` — Complétion inline FIM
+
+```js
+// src/code-city/ai/fimHandler.js
+
+import { fimCompletion } from './aiClient.js';
+import { getState } from '../state.js';
+
+const FIM_TIMEOUT_MS = 15000;  // 15s timeout (plus court que le chat)
+
+/**
+ * Extrait le prefix (texte avant la sélection) et le suffix (texte après).
+ * @param {HTMLTextAreaElement} textarea
+ * @returns {{ prefix: string, suffix: string, selected: string } | null}
+ */
+export function extractFimParts(textarea) {
+  const { selectionStart: start, selectionEnd: end, value } = textarea;
+  if (start === end) return null;  // Pas de sélection
+
+  return {
+    prefix: value.slice(0, start),
+    selected: value.slice(start, end),
+    suffix: value.slice(end),
+  };
+}
+
+/**
+ * Déclenche la complétion FIM sur un textarea Code.
+ * Extrait prefix/suffix, appelle fimCompletion, insère le résultat.
+ *
+ * @param {HTMLTextAreaElement} textarea - Le textarea #code-preview
+ * @param {Function} [onStatus] - Callback pour afficher le statut dans le chat
+ * @returns {Promise<string|null>} Le texte complété ou null si échec
+ */
+export async function triggerFimCompletion(textarea, onStatus) {
+  const parts = extractFimParts(textarea);
+  if (!parts) return null;
+
+  const provider = getState().assistant?.provider;
+  if (!provider?.id) {
+    onStatus?.('error', 'Configure un provider dans le panneau Providers pour utiliser la complétion FIM.');
+    return null;
+  }
+  if (provider.id !== 'mistral') {
+    onStatus?.('error', 'La complétion FIM est disponible uniquement avec Mistral/Codestral.');
+    return null;
+  }
+
+  onStatus?.('thinking', `Complétion FIM — prefix: ${parts.prefix.length} chars, suffix: ${parts.suffix.length} chars…`);
+
+  try {
+    // Appel FIM avec timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FIM_TIMEOUT_MS);
+
+    const result = await Promise.race([
+      fimCompletion(provider, parts.prefix, parts.suffix),
+      new Promise((_, reject) => {
+        controller.signal.addEventListener('abort', () => reject(new Error('Timeout FIM (15s)')));
+      }),
+    ]);
+    clearTimeout(timeoutId);
+
+    if (!result.content) {
+      onStatus?.('error', 'Aucune complétion générée.');
+    }
+
+    return result.content;
+
+  } catch (error) {
+    onStatus?.('error', `Erreur FIM : ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Insère le texte FIM dans le textarea à la position du curseur.
+ * Ajoute une animation de surbrillance sur le texte inséré.
+ *
+ * @param {HTMLTextAreaElement} textarea
+ * @param {string} completion - Le texte généré par FIM
+ */
+export function insertFimCompletion(textarea, completion) {
+  if (!completion) return;
+
+  const { selectionStart, selectionEnd, value } = textarea;
+  const newValue = value.slice(0, selectionStart) + completion + value.slice(selectionEnd);
+
+  textarea.value = newValue;
+  textarea.selectionStart = selectionStart;
+  textarea.selectionEnd = selectionStart + completion.length;
+  textarea.focus();
+
+  // Déclencher l'événement input pour synchroniser le state
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+  // Animation de surbrillance
+  textarea.classList.add('fim-highlight');
+  setTimeout(() => textarea.classList.remove('fim-highlight'), 2000);
+}
+```
+
+### CSS pour l'animation FIM
+
+```css
+/* Dans default.css — animation de surbrillance pour complétion FIM */
+.fim-highlight {
+  animation: fim-glow 2s ease-out;
+}
+@keyframes fim-glow {
+  0%   { box-shadow: 0 0 0 2px var(--accent-soft), 0 0 12px rgba(59, 110, 245, 0.3); }
+  100% { box-shadow: none; }
+}
 ```
 
 ### B. `contextBuilder.js` — Contexte Canvas
@@ -304,11 +499,29 @@ export function buildNodePrompt(node, graph) {
 ### D. Raccourci clavier
 
 ```js
-// Dans keyboard.js — ajouter Ctrl+Shift+A pour ouvrir le chat
+// Dans keyboard.js — ajouter les raccourcis IA
 
+// Ctrl+Shift+A : ouvrir le panneau chat
 if (e.ctrlKey && e.shiftKey && e.key === 'A') {
   e.preventDefault();
   openChatPanel();
+}
+
+// Ctrl+Shift+C : complétion inline FIM (quand focus dans #code-preview)
+if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+  const codeArea = document.getElementById('code-preview');
+  if (document.activeElement === codeArea && codeArea.selectionStart !== codeArea.selectionEnd) {
+    e.preventDefault();
+    // Callback onStatus route vers le panneau chat pour afficher le statut
+    const onStatus = (type, msg) => {
+      if (type === 'thinking') showChatStatus(msg);      // Affiche dans le panneau chat
+      else if (type === 'error') addChatErrorMessage(msg);
+      else if (type === 'done') addChatSuccessMessage(msg);
+    };
+    triggerFimCompletion(codeArea, onStatus).then((completion) => {
+      if (completion) insertFimCompletion(codeArea, completion);
+    });
+  }
 }
 ```
 
@@ -326,7 +539,106 @@ if (e.ctrlKey && e.shiftKey && e.key === 'A') {
 | 6 | `render/canvasRenderer.js` | Ajouter "💬 Demander à Mina" dans le menu nœud |
 | 7 | `quartierCenter/previewPanel.js` | Ajouter bouton "🤖 Analyser" dans l'onglet Aperçu |
 | 8 | `quartierRight/exportPanel.js` | Ajouter lien "🤖 Générer la doc avec Mina" |
-| 9 | `default.css` | Styles du panneau chat + boutons contextuels |
+| 9 | `quartierCenter/centerTabs.js` | Ajouter bouton flottant "🤖 Compléter" au-dessus de la sélection dans le textarea Code |
+| 10 | `default.css` | Styles du panneau chat + boutons contextuels + bouton FIM flottant + animation `fim-highlight` |
+| 11 | `src/code-city/ai/fimHandler.js` | **NOUVEAU** : Gestion de la complétion FIM (extractFimParts, triggerFimCompletion, insertFimCompletion) |
+
+#### Bouton flottant FIM dans centerTabs.js
+
+```js
+// Dans centerTabs.js — bouton flottant "🤖 Compléter" au-dessus de la sélection
+
+let fimFloatingBtn = null;
+
+/**
+ * Crée le bouton flottant FIM (une seule instance, réutilisée).
+ */
+function ensureFimFloatingBtn() {
+  if (fimFloatingBtn) return fimFloatingBtn;
+  fimFloatingBtn = document.createElement('button');
+  fimFloatingBtn.className = 'fim-floating-btn';
+  fimFloatingBtn.innerHTML = '🤖 Compléter';
+  fimFloatingBtn.title = 'Compléter le code sélectionné (Ctrl+Shift+C)';
+  fimFloatingBtn.style.display = 'none';
+  fimFloatingBtn.addEventListener('click', () => {
+    const codeArea = document.getElementById('code-preview');
+    if (codeArea) triggerFimCompletion(codeArea, onFimStatus);
+  });
+  document.body.appendChild(fimFloatingBtn);
+  return fimFloatingBtn;
+}
+
+/**
+ * Met à jour la position du bouton flottant selon la sélection dans le textarea.
+ */
+function updateFimFloatingBtn(textarea) {
+  const btn = ensureFimFloatingBtn();
+  const { selectionStart, selectionEnd } = textarea;
+
+  if (selectionStart === selectionEnd) {
+    btn.style.display = 'none';
+    return;
+  }
+
+  // Calculer la position approximative au-dessus de la sélection
+  // (basé sur la taille des caractères et le scroll du textarea)
+  const textBefore = textarea.value.slice(0, selectionStart);
+  const lines = textBefore.split('\n');
+  const lineIndex = lines.length - 1;
+  const lineHeight = parseInt(getComputedStyle(textarea).lineHeight) || 18;
+
+  const rect = textarea.getBoundingClientRect();
+  const topOffset = rect.top + (lineIndex * lineHeight) - textarea.scrollTop - 32;
+  const leftOffset = rect.left + 8;
+
+  btn.style.display = 'block';
+  btn.style.position = 'fixed';
+  btn.style.top = `${Math.max(topOffset, rect.top + 4)}px`;
+  btn.style.left = `${leftOffset}px`;
+  btn.style.zIndex = '9999';
+}
+
+// Câbler l'écoute de sélection dans le textarea Code
+document.getElementById('code-preview')?.addEventListener('select', (e) => {
+  updateFimFloatingBtn(e.target);
+});
+document.getElementById('code-preview')?.addEventListener('input', (e) => {
+  updateFimFloatingBtn(e.target);
+});
+// Masquer le bouton quand le focus quitte le textarea
+document.getElementById('code-preview')?.addEventListener('blur', () => {
+  setTimeout(() => { if (fimFloatingBtn) fimFloatingBtn.style.display = 'none'; }, 200);
+});
+```
+
+```css
+/* CSS pour le bouton flottant FIM */
+.fim-floating-btn {
+  position: fixed;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--t-fast), transform var(--t-fast);
+  white-space: nowrap;
+  z-index: 9999;
+}
+.fim-floating-btn:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+.fim-floating-btn:disabled {
+  background: var(--text-faint);
+  cursor: not-allowed;
+  transform: none;
+}
+```
 
 ---
 
@@ -353,6 +665,21 @@ if (e.ctrlKey && e.shiftKey && e.key === 'A') {
 | 1 | "Demander à Mina" dans le menu nœud ouvre le chat avec contexte | Le prompt contient le label du nœud |
 | 2 | Le bouton "Analyser" dans l'onglet Aperçu ouvre le chat | Le prompt parle d'analyse du diagramme |
 | 3 | Le contexte canvas est inclus dans les appels API | Vérifiable via mock |
+
+### Tests E2E : `e2e/assistant-fim.spec.js`
+
+| # | Test | Vérification |
+|---|------|-------------|
+| 1 | `extractFimParts` retourne prefix/suffix corrects | Sélection au milieu du texte |
+| 2 | `extractFimParts` retourne null si pas de sélection | selectionStart === selectionEnd |
+| 3 | `triggerFimCompletion` rejette les providers non-Mistral | Message d'erreur "disponible uniquement avec Mistral" |
+| 4 | `triggerFimCompletion` rejette si pas de provider configuré | Message "Configure un provider" |
+| 5 | `insertFimCompletion` insère le texte au bon endroit | Texte inséré entre prefix et suffix |
+| 6 | `insertFimCompletion` ajoute la classe `fim-highlight` | Animation déclenchée |
+| 7 | Le bouton flottant apparaît sur sélection dans le textarea Code | Bouton visible après sélection |
+| 8 | Le bouton flottant disparaît quand la sélection est annulée | Bouton masqué |
+| 9 | Ctrl+Shift+C déclenche la complétion FIM | Raccourci fonctionne dans le textarea Code |
+| 10 | Avec Mistral configuré, la complétion FIM fonctionne | Mock de l'API retourne du code généré |
 
 ---
 
@@ -424,8 +751,8 @@ Phase 5 (Tests E2E)             ← validation
 |------|-------|------------|
 | **Spec 1** | Providers (presets, state, client, panel, persistence) | ~15h |
 | **Spec 2** | Assistant (system prompt, chat history) | ~7h |
-| **Spec 3** | Intégration (chat panel, context, quick actions, header, keyboard, tests) | ~20h |
-| **Total** | | **~42h** |
+| **Spec 3** | Intégration (chat panel, context, quick actions, FIM, header, keyboard, tests) | ~24h |
+| **Total** | | **~46h** |
 
 ---
 
