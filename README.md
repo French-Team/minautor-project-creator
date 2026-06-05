@@ -3,7 +3,9 @@
 > *Concevez vos projets, sans écrire une seule ligne de code, et donnez-leur vie automatiquement.*
 
 <p align="center">
-  <img src="assets/logo-minautor.png" alt="Logo Minautor" width="200" />
+  <img src="assets/logo-minautor.png" alt="Logo Minautor" width="600" />
+  <img src="assets/editeur.png" alt="editeur Minautor" width="400" />
+  <img src="assets/proprietes.png" alt="proprietes Minautor" width="400" />
 </p>
 
 <p align="center">
