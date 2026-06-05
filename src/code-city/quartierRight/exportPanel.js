@@ -25,15 +25,16 @@
 import { getState, actions } from '../state.js';
 import { exportCode, exportSvg, exportPng } from '../mermaid/export.js';
 import {
-  generateDoc, generateReadme,
+  generateDoc, generateDocSection, generateReadme,
   resolveSubtree, topologicalSort,
 } from '../mermaid/docGenerator.js';
-import { generateZip, downloadZip, PRIORITY_ORDER, SPRINT_META, getPriorityKey } from '../mermaid/zipExporter.js';
-import { getCategory } from '../propertySchemas.js';
+import { generateZip, downloadZip } from '../mermaid/zipExporter.js';
+import { PRIORITY_ORDER, SPRINT_META, getPriorityKey, sanitizeFilename } from '../mermaid/zipConstants.js';
 import { iconCode, iconPhoto, iconDownload, iconJson } from '../icons.js';
 
 let isOpen = false;
 let currentMode = 'full'; // 'selected' | 'subtree' | 'full'
+let projectName = document.title.replace(/\s*Project Creator\s*$/i, '').trim() || 'Mon Projet';
 
 export async function initializeExportPanel() {
   console.log('📤 Initialisation du panneau d\'export…');
@@ -63,6 +64,8 @@ export async function initializeExportPanel() {
         // Mettre à jour la description du mode
         const modeDesc = body.querySelector('.export-mode__desc');
         if (modeDesc) modeDesc.textContent = getModeDescription(currentMode);
+        // Mettre à jour la modale d'aperçu si ouverte
+        if (isPreviewModalOpen()) updatePreviewModal();
         return;
       }
 
@@ -79,6 +82,14 @@ export async function initializeExportPanel() {
         console.error('Erreur export:', err);
         actions.setStatusMessage(`Erreur export : ${err.message}`, 'error');
       });
+    });
+
+    // Câble les changements en temps réel (input nom du projet)
+    body.addEventListener('input', (e) => {
+      if (e.target.id === 'export-project-name') {
+        projectName = e.target.value.trim() || 'Mon Projet';
+        if (isPreviewModalOpen()) updatePreviewModal();
+      }
     });
 
     // Câble la fermeture
@@ -222,6 +233,15 @@ function renderExportOptions() {
           </span>
           <span class="export-card__chevron">${iconDownload()}</span>
         </button>
+      </div>
+    </div>
+
+    <div class="export-section">
+      <div class="export-section__title">Paramètres</div>
+      <div class="export-field">
+        <label class="export-field__label" for="export-project-name">Nom du projet</label>
+        <input type="text" class="export-field__input" id="export-project-name"
+               value="${escapeAttr(projectName)}" placeholder="Mon Projet" spellcheck="false">
       </div>
     </div>
 
@@ -480,6 +500,12 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function escapeAttr(str) {
+  return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+
+
 function renderMarkdownPreview() {
   const md = generatePreviewMarkdown();
   if (!md) return '<div class="export-preview__empty">Aucun contenu à prévisualiser</div>';
@@ -500,7 +526,7 @@ function ensurePreviewModal() {
     <div class="preview-modal__backdrop"></div>
     <div class="preview-modal__dialog">
       <div class="preview-modal__header">
-        <span class="preview-modal__title">Aperçu Markdown</span>
+        <span class="preview-modal__title" id="preview-modal-title">Aperçu du ZIP</span>
         <button type="button" class="preview-modal__close" title="Fermer">✕</button>
       </div>
       <div class="preview-modal__body" id="preview-modal-content"></div>
@@ -521,12 +547,21 @@ function ensurePreviewModal() {
   });
 }
 
-function openPreviewModal() {
-  ensurePreviewModal();
+function updatePreviewModal() {
+  const titleEl = document.getElementById('preview-modal-title');
+  if (titleEl) {
+    const modeLabels = { full: 'Plan complet', selected: 'Nœud sélectionné', subtree: 'Sous-arbre' };
+    titleEl.textContent = `Aperçu du ZIP — ${projectName} — ${modeLabels[currentMode] || currentMode}`;
+  }
   const content = document.getElementById('preview-modal-content');
   if (content) {
     content.innerHTML = renderMarkdownPreview();
   }
+}
+
+function openPreviewModal() {
+  ensurePreviewModal();
+  updatePreviewModal();
   previewModalBackdrop.classList.add('is-open');
 }
 
@@ -578,7 +613,7 @@ async function runExport(format) {
       let svgCode = null;
       try { svgCode = (await exportSvg(ctx.graph)).svg; } catch (_) { /* optional */ }
       const blob = await generateZip(ctx.graph, currentMode, ctx.selectedNodeId, svgCode);
-      downloadZip(blob, 'export-mon-projet');
+      downloadZip(blob, `export-${sanitizeFilename(projectName)}`);
       const kb = (blob.size / 1024).toFixed(1);
       actions.setStatusMessage(`ZIP exporté (${kb} Ko)`, 'success');
       return;
