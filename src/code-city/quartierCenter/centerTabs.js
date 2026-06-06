@@ -17,6 +17,7 @@
  */
 
 import { getState, actions } from '../state.js';
+import { triggerFimCompletion, insertFimCompletion, isFimAvailable } from '../ai/fimHandler.js';
 
 const VALID_TABS = ['editor', 'preview', 'code', 'properties'];
 let activeTab = 'editor';
@@ -33,6 +34,9 @@ export function initializeCenterTabs() {
   });
 
   console.log('✅ Onglets du centre initialisés');
+
+  // Floating FIM button in the Code tab
+  createFimFloatingButton();
 }
 
 /** Active un onglet du centre. */
@@ -47,6 +51,9 @@ export function activateCenterTab(name) {
   document.querySelectorAll('.app__main .main__panel').forEach((p) => {
     p.classList.toggle('is-active', p.dataset.centerPanel === name);
   });
+  // Show/hide the floating FIM button based on active tab
+  updateFimFloatingVisibility(name);
+
   // Si on revient sur l'éditeur, le canvas doit reprendre sa taille —
   // un resize OBSERVER sur la zone le fait déjà, mais on s'assure que
   // l'overlay est synchro.
@@ -106,6 +113,81 @@ export function centerOnNode(nodeId) {
     y: rect.height / 2 - cy * zoom,
   };
   actions.setPan(newPan);
+}
+
+/* --------------------------------------------------------------------------
+ * FIM Floating Button — "🤖 Compléter" above the code textarea
+ * -------------------------------------------------------------------------- */
+let fimFloatingBtn = null;
+let fimStatusEl = null;
+
+function createFimFloatingButton() {
+  fimFloatingBtn = document.createElement('button');
+  fimFloatingBtn.type = 'button';
+  fimFloatingBtn.className = 'fim-floating-btn';
+  fimFloatingBtn.title = 'Compléter la sélection (Ctrl+Shift+C)';
+  fimFloatingBtn.innerHTML = '<span class="fim-floating-btn__icon">🤖</span> Compléter';
+  fimFloatingBtn.style.display = 'none';
+
+  fimStatusEl = document.createElement('span');
+  fimStatusEl.className = 'fim-floating-btn__status';
+  fimStatusEl.style.display = 'none';
+  fimFloatingBtn.appendChild(fimStatusEl);
+
+  fimFloatingBtn.addEventListener('click', async () => {
+    const textarea = document.getElementById('code-preview');
+    if (!textarea) return;
+    fimFloatingBtn.disabled = true;
+    const result = await triggerFimCompletion(textarea, (type, msg) => {
+      if (type === 'thinking') {
+        fimStatusEl.textContent = msg;
+        fimStatusEl.style.display = 'inline';
+        fimFloatingBtn.classList.add('is-loading');
+      } else if (type === 'done') {
+        fimStatusEl.textContent = '\u2713 ' + msg;
+        fimStatusEl.style.display = 'inline';
+        fimFloatingBtn.classList.remove('is-loading');
+        setTimeout(() => { fimStatusEl.style.display = 'none'; }, 3000);
+      } else if (type === 'error') {
+        fimStatusEl.textContent = '\u2717 ' + msg;
+        fimStatusEl.style.display = 'inline';
+        fimFloatingBtn.classList.remove('is-loading');
+        setTimeout(() => { fimStatusEl.style.display = 'none'; }, 5000);
+      }
+    });
+    if (result) insertFimCompletion(textarea, result);
+    fimFloatingBtn.disabled = false;
+    updateFimFloatingVisibility(activeTab);
+  });
+
+  document.body.appendChild(fimFloatingBtn);
+
+  // Update position + visibility on relevant events
+  const textarea = document.getElementById('code-preview');
+  if (textarea) {
+    const update = () => updateFimFloatingVisibility(activeTab);
+    textarea.addEventListener('select', update);
+    textarea.addEventListener('click', update);
+    textarea.addEventListener('keyup', update);
+    textarea.addEventListener('input', update);
+  }
+  window.addEventListener('resize', () => updateFimFloatingVisibility(activeTab));
+}
+
+function updateFimFloatingVisibility(tab) {
+  if (!fimFloatingBtn) return;
+  const textarea = document.getElementById('code-preview');
+  const hasSelection = textarea && textarea.selectionStart !== textarea.selectionEnd;
+  const visible = tab === 'code' && isFimAvailable() && hasSelection;
+  if (!visible) {
+    fimFloatingBtn.style.display = 'none';
+    return;
+  }
+  // Position the button above the textarea selection area
+  const taRect = textarea.getBoundingClientRect();
+  fimFloatingBtn.style.display = 'flex';
+  fimFloatingBtn.style.right = `${window.innerWidth - taRect.right + 8}px`;
+  fimFloatingBtn.style.top = `${taRect.top - 4}px`;
 }
 
 /** Échappe une chaîne pour un selector CSS (id qui contient des caractères

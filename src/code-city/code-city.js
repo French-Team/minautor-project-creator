@@ -36,6 +36,10 @@ import { initializeTheme } from './quartierTop/menuActionsTop/themeClairSombreAc
 import { initializeHistoryCanvasCenter } from './quartierCenter/structureCanvasCenter/historyCanvasCenter.js';
 import { installKeyboardShortcuts } from './keyboard.js';
 import { restoreFromStorage, startAutoSave } from './persistence.js';
+import { registerPresets } from './state.js';
+import { PROVIDER_PRESETS } from './ai/providerPresets.js';
+import { initializeProviderPanel } from './ai/providerPanel.js';
+import { initializeChatPanel } from './ai/chatPanel.js';
 
 export async function initializeApp() {
     console.log('🏙️ Initialisation de Code City...');
@@ -44,6 +48,9 @@ export async function initializeApp() {
         // 1) Structure HTML + thème (synchrone, bloque l'UI)
         createBaseStructure();
         initializeTheme();
+
+        // 1b) Enregistrer les presets de providers IA
+        registerPresets(PROVIDER_PRESETS);
 
         // 2) Boutons undo/redo + raccourcis clavier
         initializeHistoryCanvasCenter();
@@ -56,6 +63,8 @@ export async function initializeApp() {
             initializeQuartierCenter(),
             initializeCenterAuxPanels(),
             initializeExportPanel(),
+            initializeProviderPanel(),
+            initializeChatPanel(),
             initializeQuartierBottom()
         ]);
 
@@ -246,6 +255,63 @@ function createBaseStructure() {
                     <span class="status-pill">Thème <b id="theme-status">Clair</b></span>
                 </div>
             </footer>
+
+            <!-- ========== PROVIDERS PANEL (rétractable, fermé par défaut) ========== -->
+            <div class="app__providers" id="app-providers" aria-hidden="true">
+                <div class="app__providers-backdrop" id="app-providers-backdrop"></div>
+                <aside class="app__providers-panel" role="dialog" aria-labelledby="app-providers-title">
+                    <header class="app__providers-header">
+                        <h2 id="app-providers-title" class="app__providers-title">Providers IA</h2>
+                        <button type="button" class="app__providers-close" id="app-providers-close" aria-label="Fermer le panneau providers">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M18 6L6 18M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </header>
+                    <div class="app__providers-body" id="app-providers-body">
+                        <!-- Rempli dynamiquement par providerPanel.js -->
+                    </div>
+                </aside>
+            </div>
+
+            <!-- ========== CHAT PANEL (rétractable, fermé par défaut) ========== -->
+            <div class="app__chat" id="app-chat" aria-hidden="true">
+                <div class="app__chat-backdrop" id="app-chat-backdrop"></div>
+                <aside class="app__chat-panel" role="dialog" aria-labelledby="app-chat-title">
+                    <header class="app__chat-header">
+                        <div class="app__chat-header-left">
+                            <span class="app__chat-header-avatar">💬</span>
+                            <div>
+                                <h2 id="app-chat-title" class="app__chat-title">Assistant Mina</h2>
+                                <select class="app__chat-model-select" id="app-chat-model-select" title="Sélectionner un modèle">
+                                    <option value="">Chargement…</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="app__chat-header-actions">
+                            <button type="button" class="app__chat-clear" id="app-chat-clear" title="Vider le chat" aria-label="Vider l'historique du chat">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>
+                                </svg>
+                            </button>
+                            <button type="button" class="app__chat-close" id="app-chat-close" aria-label="Fermer le panneau chat">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18 6L6 18M6 6l12 12"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </header>
+                    <div class="chat-messages" id="app-chat-body">
+                        <!-- Rempli dynamiquement par chatPanel.js -->
+                    </div>
+                    <div class="chat-quick-actions" id="chat-quick-actions">
+                        <!-- Rempli dynamiquement par chatPanel.js -->
+                    </div>
+                    <div class="chat-input-area" id="chat-input-area">
+                        <!-- Rempli dynamiquement par chatPanel.js -->
+                    </div>
+                </aside>
+            </div>
 
             <!-- ========== EXPORT PANEL (rétractable, fermé par défaut) ========== -->
             <div class="app__export" id="app-export" aria-hidden="true">

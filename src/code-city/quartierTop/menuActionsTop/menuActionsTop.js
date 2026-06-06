@@ -8,6 +8,8 @@
 import { initializeEffacerAction } from './effacerActionTop.js';
 import { initializeExporterAction } from './exporterActionTop.js';
 import { initializeThemeClairSombreAction } from './themeClairSombreActionTop.js';
+import { initializeProvidersAction } from './providersActionTop.js';
+import { initializeAssistantAction } from './assistantActionTop.js';
 
 export async function initializeMenuActionsTop() {
     const actionsSection = document.querySelector('.top__actions');
@@ -48,11 +50,30 @@ export async function initializeMenuActionsTop() {
             </svg>
             <span>Thème</span>
         </button>
+
+        <button class="btn btn--ghost" id="providers-btn" title="Configurer les providers IA">
+            <svg class="btn__icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"/>
+            </svg>
+            <span>Providers</span>
+        </button>
+
+        <div style="width: 1px; height: 18px; background: var(--border); margin: 0 4px;"></div>
+
+        <button class="btn btn--ghost" id="assistant-btn" title="Assistant IA (Ctrl+Shift+A)">
+            <svg class="btn__icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h-2V6a4 4 0 0 0-4-4z"/>
+                <circle cx="12" cy="15" r="2"/>
+            </svg>
+            <span>Assistant</span>
+        </button>
     `;
 
     await initializeEffacerAction();
     await initializeExporterAction();
     await initializeThemeClairSombreAction();
+    await initializeProvidersAction();
+    await initializeAssistantAction();
 
     console.log('✅ Menu d\'actions Top initialisé');
 }

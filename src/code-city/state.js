@@ -12,6 +12,9 @@
  * phase 9 (Polish) et la persistance localStorage y sera ajoutée.
  */
 
+import { testConnection } from './ai/aiClient.js';
+import { MAX_HISTORY_MESSAGES } from './ai/chatHistory.js';
+
 const HISTORY_MAX_SIZE = 50;
 
 const initialState = () => ({
@@ -48,6 +51,16 @@ const initialState = () => ({
     message: 'Prêt',
     messageType: 'info', // 'info' | 'success' | 'warning' | 'error'
   },
+
+  // Assistant IA — configuration du provider + historique chat + clés API
+  assistant: readStoredAssistant() || {
+    provider: { ...DEFAULT_PROVIDER },
+    providers: {
+      custom: [],
+    },
+    apiKeys: [],
+    chatHistory: [],
+  },
 });
 
 function readStoredTheme() {
@@ -59,6 +72,40 @@ function readStoredTheme() {
     return 'dark';
   }
   return 'light';
+}
+
+const ASSISTANT_STORAGE_KEY = 'code-city-assistant';
+const DEFAULT_PROVIDER = {
+  id: 'ollama',
+  apiKey: '',
+  baseUrl: 'http://localhost:11434/v1',
+  model: 'llama3.2',
+  temperature: 0.7,
+  maxTokens: 4096,
+  isConnected: false,
+  lastTestedAt: null,
+};
+
+function readStoredAssistant() {
+  try {
+    const raw = localStorage.getItem(ASSISTANT_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data && typeof data === 'object' && data.provider) {
+      // Migration : l'ancien provider 'mistral' (codestral.mistral.ai) est
+      // désormais splité en 'mistral' (api.mistral.ai) et 'codestral' (codestral.mistral.ai).
+      // Si l'utilisateur avait 'mistral' avec baseUrl codestral, on migre vers 'codestral'.
+      if (data.provider.id === 'mistral' && data.provider.baseUrl?.includes('codestral.mistral.ai')) {
+        data.provider.id = 'codestral';
+      }
+      // S'assurer que apiKeys existe (backward compat pour anciens stockages)
+      if (!Array.isArray(data.apiKeys)) {
+        data.apiKeys = [];
+      }
+      return data;
+    }
+  } catch (_) {}
+  return null;
 }
 
 const state = initialState();
@@ -167,6 +214,60 @@ function recomputeStatus() {
   state.status.elementCount = state.nodes.length;
   state.status.theme = state.view.theme;
   state.status.zoomPercent = Math.round(state.view.zoom * 100);
+}
+
+/**
+ * Recherche un preset par ID dans les presets intégrés ET les custom.
+ */
+function findPreset(id) {
+  // On importe PROVIDER_PRESETS de façon lazy pour éviter les deps circulaires
+  // au chargement. En pratique, les presets sont disponibles via une closure.
+  return _presets.get(id) || state.assistant.providers.custom.find((p) => p.id === id) || null;
+}
+
+/**
+ * Retourne la catégorie d'un preset ('online' | 'local').
+ */
+function getPresetCategory(id) {
+  const preset = findPreset(id);
+  if (!preset) return 'online';
+  return preset.category;
+}
+
+/**
+ * Cache des presets importés depuis providerPresets.js.
+ * Peuplé une fois au démarrage via registerPresets().
+ */
+const _presets = new Map();
+
+/**
+ * Enregistre les presets de providers (appelé au démarrage).
+ * @param {Array} presetList - Tableau PROVIDER_PRESETS
+ */
+export function registerPresets(presetList) {
+  _presets.clear();
+  for (const p of presetList) {
+    _presets.set(p.id, p);
+  }
+}
+
+/**
+ * Persiste la section assistant dans localStorage.
+ */
+function persistAssistant() {
+  try {
+    const data = {
+      provider: { ...state.assistant.provider },
+      providers: {
+        custom: [...state.assistant.providers.custom],
+      },
+      apiKeys: [...(state.assistant.apiKeys || [])],
+      chatHistory: [...(state.assistant.chatHistory || [])],
+    };
+    localStorage.setItem(ASSISTANT_STORAGE_KEY, JSON.stringify(data));
+  } catch (_) {
+    /* noop — quota or private browsing */
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -571,6 +672,190 @@ n   */
         }
       }, durationMs);
     }
+  },
+
+  /* ----- assistant / providers ----- */
+
+  /**
+   * Sélectionne un provider (préset ou custom) et réinitialise
+   * la configuration avec les valeurs par défaut du preset.
+   */
+  setProvider(presetOrId) {
+    const preset = typeof presetOrId === 'string'
+      ? findPreset(presetOrId)
+      : presetOrId;
+    if (!preset) return;
+
+    state.assistant.provider = {
+      id: preset.id,
+      apiKey: state.assistant.provider?.id === preset.id ? (state.assistant.provider.apiKey || '') : '',
+      baseUrl: preset.baseUrl || '',
+      model: preset.defaultModel || '',
+      temperature: 0.7,
+      maxTokens: 4096,
+      isConnected: false,
+      lastTestedAt: null,
+    };
+    persistAssistant();
+    notify({ type: 'assistant:provider', provider: state.assistant.provider });
+  },
+
+  /**
+   * Met à jour un champ du provider courant (apiKey, model, temperature…).
+   */
+  updateProvider(patch) {
+    Object.assign(state.assistant.provider, patch);
+    persistAssistant();
+    notify({ type: 'assistant:provider', provider: state.assistant.provider });
+  },
+
+  /**
+   * Ajoute un provider custom et le sélectionne.
+   */
+  addCustomProvider(provider) {
+    if (!provider || !provider.id || !provider.name) return;
+    // Éviter les doublons d'ID
+    const exists = state.assistant.providers.custom.some((p) => p.id === provider.id);
+    if (exists) return;
+
+    const custom = {
+      id: provider.id,
+      name: provider.name,
+      category: provider.category || 'online',
+      baseUrl: provider.baseUrl || '',
+      authRequired: provider.authRequired !== false,
+      defaultModel: provider.defaultModel || '',
+      models: provider.models || [],
+      icon: provider.icon || 'plug',
+      description: provider.description || '',
+    };
+    state.assistant.providers.custom.push(custom);
+    actions.setProvider(custom);
+    notify({ type: 'assistant:custom-provider', custom });
+  },
+
+  /**
+   * Supprime un provider custom par ID.
+   */
+  removeCustomProvider(id) {
+    const idx = state.assistant.providers.custom.findIndex((p) => p.id === id);
+    if (idx === -1) return;
+    state.assistant.providers.custom.splice(idx, 1);
+    // Si c'était le provider actif, revenir au défaut
+    if (state.assistant.provider.id === id) {
+      actions.setProvider('ollama');
+    }
+    persistAssistant();
+    notify({ type: 'assistant:custom-provider-removed', id });
+  },
+
+  /**
+   * Réinitialise le provider aux valeurs par défaut (Ollama).
+   */
+  resetProvider() {
+    actions.setProvider({ ...DEFAULT_PROVIDER });
+  },
+
+  /* ----- API keys ----- */
+
+  /**
+   * Ajoute une clé API.
+   * @param {Object} apiKey - { name, providerId, value }
+   */
+  addApiKey(apiKey) {
+    if (!apiKey || !apiKey.value) return;
+    const key = {
+      name: apiKey.name || `Clé ${(state.assistant.apiKeys || []).length + 1}`,
+      providerId: apiKey.providerId || '',
+      value: apiKey.value,
+      createdAt: Date.now(),
+    };
+    if (!Array.isArray(state.assistant.apiKeys)) {
+      state.assistant.apiKeys = [];
+    }
+    state.assistant.apiKeys.push(key);
+    persistAssistant();
+    notify({ type: 'assistant:api-key-added', apiKey: key });
+  },
+
+  /**
+   * Met à jour une clé API par index.
+   * @param {number} index
+   * @param {Object} patch - { name?, providerId?, value? }
+   */
+  updateApiKey(index, patch) {
+    const keys = state.assistant.apiKeys;
+    if (!Array.isArray(keys) || index < 0 || index >= keys.length) return;
+    Object.assign(keys[index], patch);
+    persistAssistant();
+    notify({ type: 'assistant:api-key-updated', apiKey: keys[index] });
+  },
+
+  /**
+   * Supprime une clé API par index.
+   * @param {number} index
+   */
+  removeApiKey(index) {
+    const keys = state.assistant.apiKeys;
+    if (!Array.isArray(keys) || index < 0 || index >= keys.length) return;
+    keys.splice(index, 1);
+    persistAssistant();
+    notify({ type: 'assistant:api-key-removed', index });
+  },
+
+  /* ----- chat history ----- */
+
+  /**
+   * Ajoute un message à l'historique de chat.
+   * @param {Object} message - { role, content, timestamp?, metadata? }
+   */
+  pushChatMessage(message) {
+    if (!message || !message.role || !message.content) return;
+    const chatMessage = {
+      role: message.role,
+      content: message.content,
+      timestamp: message.timestamp || Date.now(),
+      metadata: message.metadata || {},
+    };
+    if (!Array.isArray(state.assistant.chatHistory)) {
+      state.assistant.chatHistory = [];
+    }
+    state.assistant.chatHistory.push(chatMessage);
+    // Tronquer au-delà de la limite
+    if (state.assistant.chatHistory.length > MAX_HISTORY_MESSAGES) {
+      state.assistant.chatHistory = state.assistant.chatHistory.slice(-MAX_HISTORY_MESSAGES);
+    }
+    persistAssistant();
+    notify({ type: 'assistant:chat-message', message: chatMessage });
+  },
+
+  /**
+   * Réinitialise l'historique de chat.
+   */
+  clearChatHistory() {
+    state.assistant.chatHistory = [];
+    persistAssistant();
+    notify({ type: 'assistant:chat-cleared' });
+  },
+
+  /**
+   * Teste la connexion au provider courant.
+   * @returns {Promise<{ ok: boolean, latency: number, error?: string }>}
+   */
+  async testProviderConnection() {
+    const provider = state.assistant.provider;
+    if (!provider || !provider.id) {
+      return { ok: false, latency: 0, error: 'Aucun provider configuré' };
+    }
+    const result = await testConnection({
+      ...provider,
+      category: getPresetCategory(provider.id),
+    });
+    state.assistant.provider.isConnected = result.ok;
+    state.assistant.provider.lastTestedAt = Date.now();
+    persistAssistant();
+    notify({ type: 'assistant:provider-tested', result });
+    return result;
   },
 
   /* ----- historique ----- */

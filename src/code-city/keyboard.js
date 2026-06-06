@@ -18,11 +18,16 @@
  *   Shift + Flèches      → décaler d'un pas plus large (×5)
  *   F2                   → ouvrir le panneau Propriétés pour le nœud sélectionné
  *   Enter                → ouvrir le panneau Propriétés (variante)
+ *
+ *   Ctrl+Shift+A         → ouvrir le panneau chat (Assistant Mina)
+ *   Ctrl+Shift+C         → complétion FIM inline (quand focus dans #code-preview)
  */
 
 import { getState, actions } from './state.js';
 import { flushSave } from './persistence.js';
 import { openPropertiesAndFocusLabel } from './quartierCenter/centerTabs.js';
+import { openChatPanel } from './ai/chatPanel.js';
+import { triggerFimCompletion, insertFimCompletion } from './ai/fimHandler.js';
 
 let isInstalled = false;
 
@@ -34,10 +39,32 @@ export function installKeyboardShortcuts() {
   isInstalled = true;
 
   document.addEventListener('keydown', (e) => {
+    const key = e.key;
+
+    // --- Ctrl+Shift+C → complétion FIM inline (doit fonctionner DANS les textareas) ---
+    if (e.ctrlKey && e.shiftKey && key.toLowerCase() === 'c') {
+      const codeArea = document.getElementById('code-preview');
+      if (document.activeElement === codeArea && codeArea.selectionStart !== codeArea.selectionEnd) {
+        e.preventDefault();
+        triggerFimCompletion(codeArea, (type, msg) => {
+          actions.setStatusMessage(msg, type === 'error' ? 'error' : 'info', type === 'done' ? 2000 : 0);
+        }).then((completion) => {
+          if (completion) insertFimCompletion(codeArea, completion);
+        });
+      }
+      return;
+    }
+
+    // --- Ctrl+Shift+A → ouvrir panneau chat ---
+    if (e.ctrlKey && e.shiftKey && key.toLowerCase() === 'a') {
+      e.preventDefault();
+      openChatPanel();
+      return;
+    }
+
     if (shouldIgnoreEvent(e)) return;
 
     const meta = e.ctrlKey || e.metaKey;
-    const key = e.key;
 
     // --- Undo / Redo ---
     if (meta && key.toLowerCase() === 'z' && !e.shiftKey) {

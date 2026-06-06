@@ -13,6 +13,7 @@
 import { getState, subscribe, actions } from '../state.js';
 import { buildMermaidCode, renderMermaidToSvg } from '../mermaid/build.js';
 import { activateEditorTab, centerOnNode } from './centerTabs.js';
+import { openChatPanel } from '../ai/chatPanel.js';
 
 let renderToken = 0;
 
@@ -79,6 +80,19 @@ async function renderPreview() {
 
   container.className = 'preview-frame';
   container.innerHTML = `<div class="preview-svg">${svg}</div>`;
+
+  // Bouton "Analyser avec Mina" sous le diagramme
+  const analyseBtn = document.createElement('button');
+  analyseBtn.type = 'button';
+  analyseBtn.className = 'preview-analyse-btn';
+  analyseBtn.innerHTML = '<span class="preview-analyse-btn__icon">🤖</span> Analyser avec Mina';
+  analyseBtn.addEventListener('click', () => {
+    const { nodes, edges } = getState();
+    const graph = { nodes, edges };
+    const prompt = `Analyse ce diagramme :\n\n${buildMermaidCode(graph)}\n\nDonne-moi un résumé des éléments, leurs relations, et suggère des améliorations.`;
+    openChatPanel(prompt);
+  });
+  container.appendChild(analyseBtn);
 
   // Branche le click sur les nœuds du SVG rendu → switch + sélection + centrage
   attachNodeClickHandlers(container);

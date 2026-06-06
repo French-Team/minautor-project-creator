@@ -31,6 +31,8 @@ import {
 import { generateZip, downloadZip } from '../mermaid/zipExporter.js';
 import { PRIORITY_ORDER, SPRINT_META, getPriorityKey, sanitizeFilename } from '../mermaid/zipConstants.js';
 import { iconCode, iconPhoto, iconDownload, iconJson } from '../icons.js';
+import { openChatPanel } from '../ai/chatPanel.js';
+import { buildMermaidCode } from '../mermaid/build.js';
 
 let isOpen = false;
 let currentMode = 'full'; // 'selected' | 'subtree' | 'full'
@@ -72,6 +74,17 @@ export async function initializeExportPanel() {
       // Bouton "Voir l'aperçu" → ouvre la modale
       if (e.target.closest('#export-preview-btn')) {
         openPreviewModal();
+        return;
+      }
+
+      // Bouton "Générer la doc avec Mina" → ouvre le chat avec contexte export
+      if (e.target.closest('#export-doc-mina-btn')) {
+        const { nodes, edges } = getState();
+        const graph = { nodes, edges };
+        const code = buildMermaidCode(graph);
+        const prompt = `Génère la documentation complète de ce projet Mermaid :\n\n\`\`\`mermaid\n${code}\n\`\`\`\n\nInclus : résumé, description de chaque nœud, relations, et suggestions d'amélioration.`;
+        closeExportPanel();
+        openChatPanel(prompt);
         return;
       }
 
@@ -249,6 +262,14 @@ function renderExportOptions() {
       <div class="export-section__title">Aperçu Markdown</div>
       <button type="button" class="btn btn--sm" id="export-preview-btn" ${isEmpty ? 'disabled' : ''}>
         <span>👁</span> Voir l'aperçu
+      </button>
+    </div>
+
+    <div class="export-section export-section--mina">
+      <div class="export-section__title">🤖 Assistant Mina</div>
+      <p class="export-section__desc">Générer la documentation complète de ton projet avec l'assistant IA.</p>
+      <button type="button" class="btn btn--sm btn--primary" id="export-doc-mina-btn" ${isEmpty ? 'disabled' : ''}>
+        <span>🤖</span> Générer la doc avec Mina
       </button>
     </div>
 

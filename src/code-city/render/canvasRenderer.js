@@ -11,9 +11,11 @@
  */
 
 import { getState, subscribe, actions } from '../state.js';
-import { getIcon, iconLink, iconCog, iconTrash, iconDisconnect, iconXMark, iconRefresh, iconBranch } from '../icons.js';
+import { getIcon, iconLink, iconCog, iconTrash, iconDisconnect, iconXMark, iconRefresh, iconBranch, iconUser } from '../icons.js';
 
 import { openPropertiesAndFocusLabel } from '../quartierCenter/centerTabs.js';
+import { openChatPanel } from '../ai/chatPanel.js';
+import { buildNodePrompt } from '../ai/contextBuilder.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const GRID_SIZE = 20;
@@ -532,6 +534,7 @@ function createNodeElement(node) {
     <div class="node-menu" role="toolbar" aria-label="Actions rapides">
       <button class="node-menu__btn" data-action="connect" type="button" title="Connecter (glisser vers un autre nœud)" aria-label="Connecter">${iconLink()}</button>
       <button class="node-menu__btn" data-action="properties" type="button" title="Propriétés" aria-label="Propriétés">${iconCog()}</button>
+      <button class="node-menu__btn" data-action="mina" type="button" title="Demander à Mina" aria-label="Demander à Mina">${iconUser()}</button>
       <button class="node-menu__btn node-menu__btn--danger" data-action="delete" type="button" title="Supprimer (Suppr)" aria-label="Supprimer">${iconTrash()}</button>
     </div>
   `;
@@ -673,6 +676,15 @@ function handleNodeMenuAction(nodeId, action) {
   } else if (action === 'properties') {
     openPropertiesAndFocusLabel();
     actions.selectNode(nodeId);
+  } else if (action === 'mina') {
+    actions.selectNode(nodeId);
+    const state = getState();
+    const node = state.nodes.find((n) => n.id === nodeId);
+    if (node) {
+      const graph = { nodes: state.nodes, edges: state.edges };
+      const prompt = buildNodePrompt(node, graph);
+      openChatPanel(prompt);
+    }
   } else if (action.startsWith('resize-')) {
     const count = parseInt(action.split('-')[1], 10);
     if (Number.isFinite(count)) {

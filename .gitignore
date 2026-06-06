@@ -8,3 +8,4 @@ Thumbs.db
 .vscode/
 test-results/
 playwright-report/
+.private/
