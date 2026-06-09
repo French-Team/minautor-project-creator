@@ -62,6 +62,26 @@ const initialState = () => ({
     providers: { custom: [] },
     providerConfigs: {},
     chatHistory: [],
+
+    // PromptEngine
+    currentPrompt: null,       // PreparedPrompt | null
+    promptHistory: [],         // PreparedPrompt[] (max 20)
+    promptCache: {},           // { [type-contextHash]: PreparedPrompt }
+
+    // Fenêtre de contexte
+    contextWindow: 4096,       // Détecté automatiquement
+
+    // Modèle de préparation/optimisation (optionnel)
+    preparationModel: null,    // null = utilise le même modèle que le chat
+    optimizationThreshold: 500, // seuil en tokens pour déclencher l'optimisation
+
+    // Stats d'optimisation
+    optimizationStats: {
+      totalOptimized: 0,
+      totalTokensSaved: 0,
+      totalOriginalTokens: 0,
+      averageCompression: 0,   // ratio en %
+    },
   },
 });
 
@@ -132,9 +152,7 @@ export async function initAssistant() {
 
   // 3. Charger la config sauvegardée de ce provider
   const savedConfig = await getProviderConfig(providerId);
-  const preset = getPreset(providerId);
-
-  if (preset) {
+  const preset = getPreset(providerId);    if (preset) {
     state.assistant.provider = {
       id: preset.id,
       baseUrl: preset.baseUrl || '',
@@ -146,8 +164,18 @@ export async function initAssistant() {
       envKey: preset.envKey || null,
     };
 
+    // Restaurer les réglages d'optimisation depuis la config sauvegardée
+    if (typeof savedConfig?.optimizationThreshold === 'number') {
+      state.assistant.optimizationThreshold = Math.max(100, Math.floor(savedConfig.optimizationThreshold));
+    }
+    if (typeof savedConfig?.preparationModel === 'string' && savedConfig.preparationModel) {
+      state.assistant.preparationModel = savedConfig.preparationModel;
+    }
+
     // Mettre en cache in-memory
     const { modelMeta: _, ...current } = state.assistant.provider;
+    current.optimizationThreshold = state.assistant.optimizationThreshold;
+    current.preparationModel = state.assistant.preparationModel;
     state.assistant.providerConfigs[preset.id] = current;
   }
 
@@ -769,6 +797,8 @@ n   */
     // Sauvegarder la config du provider précédent (sans modelMeta éphémère)
     if (prev?.id) {
       const { modelMeta: _, ...saved } = prev;
+      saved.optimizationThreshold = state.assistant.optimizationThreshold;
+      saved.preparationModel = state.assistant.preparationModel;
       configs[prev.id] = saved;
     }
 
@@ -797,6 +827,20 @@ n   */
           lastTestedAt: null,
           envKey: preset.envKey || null,
         };
+
+    // Restaurer le seuil d'optimisation du provider cible (depuis le cache)
+    if (cached && typeof cached.optimizationThreshold === 'number') {
+      state.assistant.optimizationThreshold = Math.max(100, Math.floor(cached.optimizationThreshold));
+    } else {
+      state.assistant.optimizationThreshold = 500;
+    }
+
+    // Restaurer le modèle de préparation du provider cible (depuis le cache)
+    if (cached && typeof cached.preparationModel === 'string' && cached.preparationModel) {
+      state.assistant.preparationModel = cached.preparationModel;
+    } else {
+      state.assistant.preparationModel = null;
+    }
 
     state.assistant.providerConfigs = configs;
 
@@ -868,6 +912,87 @@ n   */
    */
   resetProvider() {
     actions.setProvider({ ...DEFAULT_PROVIDER });
+  },
+
+  /* ----- prompt engine ----- */
+
+  /**
+   * Définit le prompt préparé actuel.
+   * @param {Object|null} preparedPrompt
+   */
+  setCurrentPrompt(preparedPrompt) {
+    state.assistant.currentPrompt = preparedPrompt;
+
+    // Ajouter à l'historique si non null
+    if (preparedPrompt) {
+      if (!Array.isArray(state.assistant.promptHistory)) {
+        state.assistant.promptHistory = [];
+      }
+      state.assistant.promptHistory.push(preparedPrompt);
+      if (state.assistant.promptHistory.length > 20) {
+        state.assistant.promptHistory.shift();
+      }
+
+      // Mettre en cache
+      if (!state.assistant.promptCache) {
+        state.assistant.promptCache = {};
+      }
+      const cacheKey = `${preparedPrompt.type}-${preparedPrompt.context?.contextHash || ''}`;
+      state.assistant.promptCache[cacheKey] = preparedPrompt;
+    }
+
+    notify({ type: 'assistant:prompt', prompt: preparedPrompt });
+  },
+
+  /**
+   * Vide le cache des prompts.
+   */
+  clearPromptCache() {
+    state.assistant.promptCache = {};
+    notify({ type: 'assistant:prompt-cache-cleared' });
+  },
+
+  /**
+   * Définit la fenêtre de contexte détectée.
+   * @param {number} size - Taille en tokens
+   */
+  setContextWindow(size) {
+    state.assistant.contextWindow = size;
+    notify({ type: 'assistant:context-window', size });
+  },
+
+  /**
+   * Définit le modèle utilisé pour la préparation/optimisation.
+   * @param {string|null} modelId - null = utilise le modèle du chat
+   */
+  setPreparationModel(modelId) {
+    state.assistant.preparationModel = modelId || null;
+    notify({ type: 'assistant:preparation-model', modelId });
+  },
+
+  /**
+   * Définit le seuil d'optimisation en tokens.
+   * @param {number} threshold - Seuil en tokens (>= 100)
+   */
+  setOptimizationThreshold(threshold) {
+    state.assistant.optimizationThreshold = Math.max(100, Math.floor(threshold));
+    notify({ type: 'assistant:optimization-threshold', threshold: state.assistant.optimizationThreshold });
+  },
+
+  /**
+   * Met à jour les statistiques d'optimisation cumulées.
+   * @param {number} tokensSaved - Tokens économisés par cette optimisation
+   * @param {number} originalTokens - Tokens dans la réponse originale avant optimisation
+   */
+  updateOptimizationStats(tokensSaved, originalTokens) {
+    const s = state.assistant.optimizationStats;
+    s.totalOptimized += 1;
+    s.totalTokensSaved += tokensSaved;
+    s.totalOriginalTokens += originalTokens;
+    s.averageCompression = s.totalOriginalTokens > 0
+      ? Math.round((s.totalTokensSaved / s.totalOriginalTokens) * 100)
+      : 0;
+    notify({ type: 'assistant:optimization-stats', stats: { ...s } });
   },
 
   /* ----- chat history ----- */

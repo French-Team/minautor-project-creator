@@ -7,10 +7,15 @@ const ENV_PATH = path.resolve(process.cwd(), '.env');
 const STATE_PATH = path.resolve(process.cwd(), 'minautor-state.json');
 const PROVIDERS_DIR = path.resolve(process.cwd(), 'data/providers');
 const ACTIVE_PROVIDER_PATH = path.resolve(process.cwd(), 'data/active-provider.json');
+const PROMPTS_DIR = path.resolve(process.cwd(), 'data/prompts');
+const PROMPTS_INDEX_PATH = path.resolve(process.cwd(), 'data/prompts/index.json');
 
-// Ensure providers directory exists
+// Ensure directories exist
 if (!fs.existsSync(PROVIDERS_DIR)) {
   fs.mkdirSync(PROVIDERS_DIR, { recursive: true });
+}
+if (!fs.existsSync(PROMPTS_DIR)) {
+  fs.mkdirSync(PROMPTS_DIR, { recursive: true });
 }
 
 function loadEnv() {
@@ -383,9 +388,218 @@ const server = http.createServer((req, res) => {
     }
   }
 
+  // ── API Prompts (/api/prompts) ────────────────────────────────────
+  if (req.method === 'GET') {
+    const rUrl = req.url || '';
+    const qIdx = rUrl.indexOf('?');
+    const pathOnly = qIdx >= 0 ? rUrl.slice(0, qIdx) : rUrl;
+
+    if (pathOnly === '/api/prompts') {
+      const queryStr = qIdx >= 0 ? rUrl.slice(qIdx + 1) : '';
+      const params = queryStr ? new URLSearchParams(queryStr) : new URLSearchParams();
+      const searchQuery = params.get('q')?.toLowerCase().trim() || null;
+      const typeFilter = params.get('type')?.toLowerCase().trim() || null;
+
+      let index = loadPromptsIndex();
+      let prompts = index.prompts;
+
+      // 1. Filtrer par type (exact match, insensible à la casse)
+      if (typeFilter) {
+        prompts = prompts.filter(p =>
+          p.type && p.type.toLowerCase() === typeFilter
+        );
+      }
+
+      // 2. Filtrer par recherche textuelle (?q=)
+      let contentSearch = false;
+
+      if (searchQuery) {
+        const metaMatched = new Set();
+        const metaFiltered = prompts.filter(p => {
+          const match = (p.id && p.id.toLowerCase().includes(searchQuery)) ||
+                        (p.type && p.type.toLowerCase().includes(searchQuery)) ||
+                        (p.category && p.category.toLowerCase().includes(searchQuery));
+          if (match) metaMatched.add(p.id);
+          return match;
+        });
+
+        // 3. Chercher dans le contenu des fichiers .md des prompts non matchés
+        const contentMatched = [];
+        for (const p of prompts) {
+          if (metaMatched.has(p.id)) continue;
+          const filePath = path.join(PROMPTS_DIR, (p.id || '') + '.md');
+          try {
+            if (fs.existsSync(filePath)) {
+              const content = fs.readFileSync(filePath, 'utf-8').toLowerCase();
+              if (content.includes(searchQuery)) {
+                contentMatched.push(p);
+              }
+            }
+          } catch (_) {}
+        }
+
+        contentSearch = contentMatched.length > 0;
+        prompts = [...metaFiltered, ...contentMatched];
+      }
+
+      // Reconstruire l'index avec les prompts filtrés
+      index = {
+        current: index.current,
+        prompts,
+        totalFiles: prompts.length,
+        lastModified: index.lastModified,
+        ...(searchQuery ? { searchQuery, contentSearch } : {}),
+        ...(typeFilter ? { filterType: typeFilter } : {}),
+      };
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(index));
+      return;
+    }
+  }
+
+  if (req.url === '/api/prompts' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const { filename, content, index: indexEntry } = data;
+
+        if (!filename || !content) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'filename and content are required' }));
+          return;
+        }
+
+        // Écrire le fichier .md
+        const filePath = path.join(PROMPTS_DIR, filename);
+        fs.writeFileSync(filePath, content, 'utf-8');
+
+        // Mettre à jour index.json
+        if (indexEntry) {
+          const index = loadPromptsIndex();
+          // Vérifier si ce prompt existe déjà (par id)
+          const existingIdx = index.prompts.findIndex(p => p.id === indexEntry.id);
+          if (existingIdx >= 0) {
+            index.prompts[existingIdx] = indexEntry;
+          } else {
+            index.prompts.push(indexEntry);
+          }
+          index.current = indexEntry.id;
+          index.totalFiles = index.prompts.length;
+          index.lastModified = Date.now();
+
+          // Rotation : garder max 50 fichiers
+          if (index.prompts.length > 50) {
+            // Trier par timestamp (plus vieux d'abord)
+            index.prompts.sort((a, b) => a.timestamp - b.timestamp);
+            // Supprimer les plus vieux
+            const toRemove = index.prompts.slice(0, index.prompts.length - 50);
+            index.prompts = index.prompts.slice(-50);
+            for (const old of toRemove) {
+              const oldPath = path.join(PROMPTS_DIR, old.id + '.md');
+              try { fs.unlinkSync(oldPath); } catch (_) {}
+            }
+            // S'assurer que current est toujours dans la liste
+            if (!index.prompts.find(p => p.id === index.current)) {
+              index.current = index.prompts[index.prompts.length - 1]?.id || null;
+            }
+            index.totalFiles = index.prompts.length;
+          }
+
+          savePromptsIndex(index);
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, filename }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ── API Single prompt file ────────────────────────────────────────
+  // GET /api/prompts/{id}.md
+  // DELETE /api/prompts/{id}
+  const promptsFileMatch = req.url.match(/^\/api\/prompts\/([a-zA-Z0-9_-]+\.md)$/);
+  const promptsDeleteMatch = req.url.match(/^\/api\/prompts\/([a-zA-Z0-9_-]+)$/);
+
+  if (promptsFileMatch && req.method === 'GET') {
+    const filename = promptsFileMatch[1];
+    const filePath = path.join(PROMPTS_DIR, filename);
+    try {
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+        res.end(content);
+      } else {
+        res.writeHead(404);
+        res.end('Not found');
+      }
+    } catch (_) {
+      res.writeHead(500);
+      res.end('Error');
+    }
+    return;
+  }
+
+  if (promptsDeleteMatch && req.method === 'DELETE') {
+    const id = promptsDeleteMatch[1];
+    const filePath = path.join(PROMPTS_DIR, id + '.md');
+    try {
+      // Supprimer le fichier
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+
+      // Mettre à jour index.json
+      const index = loadPromptsIndex();
+      const removed = index.prompts.filter(p => p.id !== id);
+      const wasRemoved = removed.length < index.prompts.length;
+      index.prompts = removed;
+      if (index.current === id) {
+        index.current = index.prompts[index.prompts.length - 1]?.id || null;
+      }
+      index.totalFiles = index.prompts.length;
+      index.lastModified = Date.now();
+      savePromptsIndex(index);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, removed: wasRemoved }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
+
+// ── Prompts helpers ──────────────────────────────────────────────────────
+
+function loadPromptsIndex() {
+  try {
+    if (fs.existsSync(PROMPTS_INDEX_PATH)) {
+      return JSON.parse(fs.readFileSync(PROMPTS_INDEX_PATH, 'utf-8'));
+    }
+  } catch (_) {}
+  return { current: null, prompts: [], totalFiles: 0, lastModified: Date.now() };
+}
+
+function savePromptsIndex(index) {
+  try {
+    fs.writeFileSync(PROMPTS_INDEX_PATH, JSON.stringify(index, null, 2), 'utf-8');
+    return true;
+  } catch (e) {
+    console.error('[env-server] Failed to save prompts index:', e.message);
+    return false;
+  }
+}
 
 server.listen(PORT, () => {
   console.log(`🔑 Env server running on http://localhost:${PORT}/api/env`);

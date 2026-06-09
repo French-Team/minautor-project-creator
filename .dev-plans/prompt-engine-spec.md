@@ -115,7 +115,7 @@ export class PromptEngine {
   id: string,          // UUID ou timestamp
   type: PromptType,    // 'analysis' | 'suggestion' | 'documentation' | 'enrichment' | 'architecture' | 'conversation'
   userMessage: string, // Message original de l'utilisateur
-  prompt: string,      // Prompt système préparé (Markdown)
+  prompt: string,      // Prompt système préparé (Markdown) — version finale (locale ou améliorée)
   context: {
     nodeCount: number,
     edgeCount: number,
@@ -127,6 +127,10 @@ export class PromptEngine {
   timestamp: number,
   filePath: string,    // Chemin du fichier sur disque
   duration: number,    // ms de préparation
+
+  // Amélioration API via modèle de préparation (PE-4)
+  apiEnhanced: boolean,    // true si le prompt a été amélioré via le modèle de préparation
+  originalPrompt: string | null, // Prompt composé localement avant amélioration API (null si pas d'amélioration tentée)
 }
 ```
 

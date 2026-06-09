@@ -4107,11 +4107,11 @@ body.mode-connect .canvas-element.connect-target { cursor: crosshair; }
 }
 /* ---- Streaming stats (header) ---- */
 .chat-stream-stats {
-  flex: 0 0 auto;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 10px;
+  padding: 4px 10px;
   font-size: 10px;
   font-weight: 500;
   color: var(--accent);
@@ -4659,4 +4659,54 @@ code.hljs { padding: 3px 5px; }
 }
 .theme-dark .chat-notice__link:hover {
   background: var(--accent);
+}
+/* ---------------------------------------------------------------------
+   Chat — Badge d'optimisation
+   --------------------------------------------------------------------- */
+.chat-opt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  line-height: 1.4;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+  transition: opacity var(--t-normal);
+}
+.chat-opt-badge--optimizing {
+  background: rgba(217, 119, 6, 0.12);
+  color: var(--warning);
+  animation: opt-pulse 1.5s ease-in-out infinite;
+}
+.chat-opt-badge--done {
+  background: rgba(21, 163, 90, 0.12);
+  color: var(--success);
+}
+.chat-opt-badge--no-change {
+  background: var(--bg-tert);
+  color: var(--text-faint);
+}
+.chat-opt-badge--failed {
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--text-muted);
+}
+@keyframes opt-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.chat-opt-badge--optimizing::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: opt-spin 0.8s linear infinite;
+}
+@keyframes opt-spin {
+  to { transform: rotate(360deg); }
 }

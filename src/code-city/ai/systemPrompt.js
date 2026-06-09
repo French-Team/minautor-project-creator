@@ -54,10 +54,23 @@ Chaque type a des propriétés spécifiques (ex: service-api a endpoint, method,
 
 /**
  * Construit le system prompt dynamique avec le contexte du canvas.
+ *
  * @param {Object} graph - { nodes, edges } depuis state.js
+ * @param {string|null} [customPrompt=null] - Prompt préparé par PromptEngine
+ * @param {'replace'|'enrich'} [mode='replace'] - Stratégie de fusion
  * @returns {Array} Messages système + contexte (format API OpenAI)
  */
-export function buildSystemMessages(graph) {
+export function buildSystemMessages(graph, customPrompt = null, mode = 'replace') {
+  // Si un prompt préparé est fourni :
+  // - mode 'replace' : utiliser UNIQUEMENT le prompt préparé
+  // - mode 'enrich'  : préfixer le prompt préparé devant le SYSTEM_PROMPT
+  if (customPrompt) {
+    if (mode === 'enrich') {
+      return [{ role: 'system', content: customPrompt + '\n\n---\n\n' + SYSTEM_PROMPT }];
+    }
+    return [{ role: 'system', content: customPrompt }];
+  }
+
   const { nodes, edges } = graph;
 
   // Résumé du canvas pour le contexte

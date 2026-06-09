@@ -53,9 +53,9 @@ export async function initializeProviderPanel() {
     closeBtn.addEventListener('click', () => closeProviderPanel());
     backdrop.addEventListener('click', () => closeProviderPanel());
 
-    // Rafraîchir Zone 1 quand le provider change
+    // Rafraîchir quand le provider ou les stats d'optimisation changent
     subscribe((_state, meta) => {
-      if (isOpen && meta.type === 'assistant:provider') {
+      if (isOpen && (meta.type === 'assistant:provider' || meta.type === 'assistant:optimization-stats')) {
         render();
       }
     });
@@ -392,9 +392,13 @@ function renderModelSelectionStep() {
 
 function renderValidatedStep() {
   const state = getWorkflowState();
-  const current = getState().assistant.provider;
-  const preset = current.id ? getPreset(current.id) : null;
+  const current = getState().assistant.provider;    const preset = current.id ? getPreset(current.id) : null;
   const model = state.loadedModels?.find(m => m.id === state.selectedModelId);
+  const optimizationThreshold = getState().assistant?.optimizationThreshold ?? 500;
+  const optStats = getState().assistant?.optimizationStats || {};
+  const hasStats = optStats.totalOptimized > 0;
+  const preparationModel = getState().assistant?.preparationModel || '';
+  const models = state.loadedModels || [];
 
   return `
     <div class="pp-workflow">
@@ -420,8 +424,62 @@ function renderValidatedStep() {
             </div>
           ` : ''}
         </div>
+        <details class="pp-options">
+          <summary class="pp-options__summary">⚙️ Options avancées</summary>
+          <div class="pp-options__body">
+            <div class="pp-options__field">
+              <label class="pp-options__label" for="pp-opt-threshold">
+                Seuil d'optimisation : <strong id="pp-opt-threshold-value">${optimizationThreshold}</strong> tokens
+              </label>
+              <p class="pp-options__hint">Les réponses plus longues que ce seuil seront automatiquement optimisées par le modèle.</p>
+              <div class="pp-options__slider-wrap">
+                <input type="range" id="pp-opt-threshold" class="pp-options__slider"
+                       min="100" max="2000" step="50" value="${optimizationThreshold}"
+                       aria-labelledby="pp-opt-threshold-value" />
+                <div class="pp-options__slider-labels">
+                  <span>100</span>
+                  <span>1 000</span>
+                  <span>2 000</span>
+                </div>
+              </div>
+            </div>
+            ${hasStats ? `
+              <div class="pp-opt-stats">
+                <div class="pp-opt-stats__title">📊 Statistiques d'optimisation</div>
+                <div class="pp-opt-stats__grid">
+                  <div class="pp-opt-stats__item">
+                    <span class="pp-opt-stats__value">${optStats.totalOptimized}</span>
+                    <span class="pp-opt-stats__label">optimisé${optStats.totalOptimized > 1 ? 's' : ''}</span>
+                  </div>
+                  <div class="pp-opt-stats__item">
+                    <span class="pp-opt-stats__value">${optStats.totalTokensSaved.toLocaleString('fr-FR')}</span>
+                    <span class="pp-opt-stats__label">tokens économisés</span>
+                  </div>
+                  <div class="pp-opt-stats__item">
+                    <span class="pp-opt-stats__value">${optStats.averageCompression}%</span>
+                    <span class="pp-opt-stats__label">taux de compression</span>
+                  </div>
+                </div>
+              </div>
+            ` : ''}
+            ${models.length > 0 ? `
+              <div class="pp-options__field">
+                <label class="pp-options__label" for="pp-prep-model">Modèle de préparation / optimisation</label>
+                <p class="pp-options__hint">Modèle utilisé pour préparer le prompt et optimiser les réponses. Par défaut, utilise le même modèle que le chat.</p>
+                <select id="pp-prep-model" class="pp-options__select">
+                  <option value="" ${!preparationModel ? 'selected' : ''}>— Même modèle que le chat (défaut)</option>
+                  ${models.map(m => `
+                    <option value="${escapeHtml(m.id)}" ${m.id === preparationModel ? 'selected' : ''}>
+                      ${escapeHtml(m.name)}${m.contextWindow ? ` (${m.contextWindow.toLocaleString()} tokens)` : ''}${m.isFree ? ' — GRATUIT' : ''}
+                    </option>
+                  `).join('')}
+                </select>
+              </div>
+            ` : ''}
+          </div>
+        </details>
         <div class="pp-workflow__actions">
-          <button type="button" class="btn btn--primary" data-action="save-config" title="Enregistrer cette configuration comme默认值">
+          <button type="button" class="btn btn--primary" data-action="save-config" title="Enregistrer cette configuration">
             💾 Enregistrer
           </button>
           <button type="button" class="btn btn--secondary" data-action="edit-config" title="Modifier la configuration">
@@ -513,6 +571,8 @@ function wireEventListeners(panelEl) {
           //   envKey  → dérivé du preset, pas besoin de le stocker
           //   modelMeta → éphémère (résultat du dernier test)
           const { modelMeta: _, apiKey: _k, envKey: _e, ...config } = currentProvider;
+          config.optimizationThreshold = getState().assistant?.optimizationThreshold ?? 500;
+          config.preparationModel = getState().assistant?.preparationModel || null;
 
           // Écrire dans le fichier provider individuel (data/providers/{id}.json)
           setProviderConfig(currentProvider.id, config).then(ok => {
@@ -567,6 +627,22 @@ function wireEventListeners(panelEl) {
     if (e.target.id === 'pp-api-key') {
       const btn = panelEl.querySelector('#pp-test-key-btn');
       if (btn) btn.disabled = !e.target.value.trim();
+    }
+
+    // Slider seuil d'optimisation — mettre à jour l'affichage et le state en direct
+    if (e.target.id === 'pp-opt-threshold') {
+      const value = Number(e.target.value);
+      const display = panelEl.querySelector('#pp-opt-threshold-value');
+      if (display) display.textContent = value;
+      actions.setOptimizationThreshold(value);
+    }
+
+  });
+
+  // Change event pour le select du modèle de préparation (change ≠ input pour <select>)
+  panelEl.addEventListener('change', (e) => {
+    if (e.target.id === 'pp-prep-model') {
+      actions.setPreparationModel(e.target.value || null);
     }
   });
 }

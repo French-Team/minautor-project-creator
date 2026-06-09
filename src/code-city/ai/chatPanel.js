@@ -22,6 +22,8 @@ import { QUICK_ACTION_CATEGORIES, ACTION_ICONS } from './quickActions.js';
 import { openProviderPanel } from './providerPanel.js';
 import { getPreset, getAllPresets } from './providerLoader.js';
 import { renderMarkdown, renderStreamingMarkdown } from './markdownRenderer.js';
+import { PromptEngine, hashContext, DEFAULT_OPTIMIZATION_THRESHOLD } from './promptEngine.js';
+import { estimateTokens } from './chatHistory.js';
 
 /* ---------- Provider Greek names ---------- */
 
@@ -39,6 +41,7 @@ const PROVIDER_TITLES = {
 let panelEl = null;
 let isOpen = false;
 let isThinking = false;
+let isOptimizing = false;      // true pendant l'optimisation (après streaming)
 let streamAbortController = null; // AbortController pour annuler le streaming en cours
 let typewriterTimer = null;     // Timer pour effet typewriter (10ms) — ajout texte brut
 let markdownSyncTimer = null;   // Timer pour sync Markdown (500ms) — rendu formaté
@@ -47,6 +50,13 @@ let scrollThrottleTimer = null;  // Throttle pour scrollToBottom (un seul rAF à
 let streamStartTime = null; // Timestamp de début du streaming
 let streamTokenCount = 0; // Nombre de tokens reçus pendant le streaming
 let streamStatsTimer = null; // Timer pour rafraîchir l'indicateur stats
+
+// PromptEngine
+let promptEngine = null;
+
+// Rafraîchissement du cache
+let refreshTimer = null;       // setInterval pour refresh périodique
+let lastCanvasHash = '';       // Dernier hash du canvas (pour détection de changement)
 
 /* ---------- Initialisation ---------- */
 
@@ -66,6 +76,18 @@ export async function initializeChatPanel() {
     }
 
     panelEl = root;
+
+    // Initialiser le PromptEngine
+    if (!promptEngine) {
+      promptEngine = new PromptEngine();
+      const provider = getState().assistant?.provider;
+      if (provider?.id) {
+        promptEngine.initContextWindow(provider).catch(() => {});
+      }
+    }
+
+    // Exposer globalement pour les tests E2E (comme window.__state)
+    window.__promptEngine = promptEngine;
 
     // Rendre le contenu initial et mettre à jour le titre
     updateChatTitle();
@@ -131,6 +153,22 @@ export async function initializeChatPanel() {
       }
     });
 
+    // Écouter les changements du canvas pour invalider le cache du prompt
+    // Les événements graph:loaded/cleared, node:added/removed/updated changent
+    // le contexte du canvas → les prompts en cache ne sont plus valides
+    subscribe((_state, meta) => {
+      if (!promptEngine) return;
+      const canvasEvents = new Set([
+        'node:added', 'node:removed', 'node:updated',
+        'graph:loaded', 'graph:cleared',
+        'edge:added', 'edge:removed', 'edges:bulk-removed',
+      ]);
+      if (canvasEvents.has(meta.type)) {
+        promptEngine.clearCache();
+        lastCanvasHash = ''; // Forcer re-hash au prochain refresh
+      }
+    });
+
     // État initial : fermé
     applyOpenState(root, false);
     console.log('✅ Panneau chat initialisé (fermé)');
@@ -156,6 +194,9 @@ export async function openChatPanel(initialPrompt = '') {
   updateChatTitle();
   renderPanelContent();
 
+  // Démarrer le rafraîchissement périodique du cache (toutes les 30s)
+  startRefreshTimer();
+
   if (initialPrompt) {
     await sendMessage(initialPrompt);
   }
@@ -166,6 +207,9 @@ export function closeChatPanel() {
   if (!panelEl || !isOpen) return;
   isOpen = false;
   applyOpenState(panelEl, false);
+
+  // Arrêter le rafraîchissement périodique quand le chat est fermé
+  stopRefreshTimer();
 }
 
 /** Toggle (utilisé par le bouton du top bar). */
@@ -248,6 +292,84 @@ function renderPanelContent() {
   renderInputArea();
 
   scrollToBottom();
+}
+
+/**
+ * Rend la section repliable du prompt préparé dans le flux de chat.
+ * Insérée entre le message utilisateur et la réponse.
+ * @param {import('./promptEngine.js').PreparedPrompt} prepared
+ * @returns {HTMLElement|null} L'élément DOM créé
+ */
+function renderPromptSection(prepared) {
+  const body = panelEl?.querySelector('#app-chat-body');
+  if (!body || !prepared) return null;
+
+  const typeLabel = {
+    analysis: 'Analyse',
+    suggestion: 'Suggestion',
+    documentation: 'Documentation',
+    enrichment: 'Enrichissement',
+    architecture: 'Architecture',
+    conversation: 'Conversation',
+  }[prepared.type] || prepared.type;
+
+  const cacheLabel = prepared.cached ? ' · réutilisé [cache]' : ' · préparé';
+  const estTokens = Math.ceil(prepared.prompt.length / 4);
+
+  // Nettoyer le prompt : ne garder que les premières lignes pour l'aperçu
+  const previewLines = prepared.prompt.split('\n').slice(0, 5).join('\n');
+  const hasMore = prepared.prompt.split('\n').length > 5;
+
+  // Utiliser un ID unique basé sur le prepared.id pour éviter les doublons
+  const sectionId = `chat-prompt-section-${prepared.id}`;
+  const details = document.createElement('details');
+  details.className = 'chat-prompt-section';
+  details.id = sectionId;
+  details.innerHTML = `
+    <summary class="chat-prompt-section__summary">
+      <span class="chat-prompt-section__title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+        Prompt utilisé (${typeLabel}${cacheLabel})
+      </span>
+      <span class="chat-prompt-section__meta">
+        <span class="chat-prompt-section__tokens">📏 ${estTokens} tok</span>
+        ${prepared.cached ? '<span class="chat-prompt-section__badge chat-prompt-section__badge--cached">cache</span>' : ''}
+        ${prepared.apiEnhanced ? '<span class="chat-prompt-section__badge chat-prompt-section__badge--enhanced">✨ amélioré</span>' : ''}
+        <button type="button" class="chat-prompt-section__reprepare" data-action="re-prepare-prompt" title="Re-préparer le prompt">↻</button>
+      </span>
+    </summary>
+    <div class="chat-prompt-section__content">
+      <pre class="chat-prompt-section__pre">${escapeHtml(previewLines)}${hasMore ? '\n...' : ''}</pre>
+      <div class="chat-prompt-section__footer">
+        <span class="chat-prompt-section__context">
+          ${prepared.context.nodeCount} nœuds · ${prepared.context.edgeCount} arêtes
+          ${prepared.context.selectedNodes.length > 0 ? `· ${prepared.context.selectedNodes.length} sélectionné(s)` : ''}
+        </span>
+      </div>
+    </div>
+  `;
+
+  // Insérer après le dernier message utilisateur
+  const userMessages = body.querySelectorAll('.chat-msg--user');
+  const lastUser = userMessages[userMessages.length - 1];
+  if (lastUser && lastUser.nextSibling) {
+    body.insertBefore(details, lastUser.nextSibling);
+  } else if (lastUser) {
+    body.appendChild(details);
+  } else {
+    // Fallback : insérer avant le typewriting
+    const typingEl = body.querySelector('#chat-typing');
+    if (typingEl) body.insertBefore(details, typingEl);
+    else body.appendChild(details);
+  }
+
+  return details;
 }
 
 function renderWelcome() {
@@ -461,6 +583,13 @@ function handleChatBodyClick(e) {
     if (retryText) sendMessage(retryText);
     return;
   }
+
+  // Re-prepare prompt button
+  const reprepareBtn = e.target.closest('[data-action="re-prepare-prompt"]');
+  if (reprepareBtn) {
+    handleRepreparePrompt();
+    return;
+  }
 }
 
 /* ---------- Send message ---------- */
@@ -468,7 +597,7 @@ function handleChatBodyClick(e) {
 async function sendMessage(text, options = {}) {
   const { skipUserMessage = false } = options;
 
-  if (!text.trim() || isThinking) return;
+  if (!text.trim() || isThinking || isOptimizing) return;
 
   const provider = getState().assistant?.provider;
   if (!provider?.id) {
@@ -481,6 +610,19 @@ async function sendMessage(text, options = {}) {
     appendMessageToDOM('user', text);
     actions.pushChatMessage({ role: 'user', content: text, timestamp: Date.now() });
     setInputValue('');
+
+    // Préparer le prompt via PromptEngine
+    try {
+      const graph = { nodes: getState().nodes, edges: getState().edges };
+      const prepared = await promptEngine.preparePrompt(text, graph);
+      actions.setCurrentPrompt(prepared);
+
+      // Afficher la section prompt dans le DOM
+      renderPromptSection(prepared);
+    } catch (err) {
+      console.warn('[Chat] Échec préparation prompt:', err.message);
+      // Continue sans prompt préparé (fallback SYSTEM_PROMPT)
+    }
   }
   scrollToBottom();
 
@@ -496,9 +638,12 @@ async function sendMessage(text, options = {}) {
   let streamedContent = '';
 
   try {
-    // Construire les messages avec le contexte du canvas
+    // Construire les messages avec le contexte du canvas et le prompt préparé
     const graph = { nodes: getState().nodes, edges: getState().edges };
-    const systemMessages = buildSystemMessages(graph);
+    const currentPrompt = promptEngine?.getCurrentPrompt();
+    const customPrompt = currentPrompt?.prompt || null;
+    const promptMode = currentPrompt?.type === 'conversation' ? 'enrich' : 'replace';
+    const systemMessages = buildSystemMessages(graph, customPrompt, promptMode);
     const history = getState().assistant.chatHistory || [];
     const allMessages = [
       ...systemMessages,
@@ -556,6 +701,15 @@ async function sendMessage(text, options = {}) {
         }
       },
     }, streamAbortController.signal);
+
+    // Post-optimisation après streaming (sauf pour régénération)
+    if (!skipUserMessage && streamedContent && !isOptimizing) {
+      const tokenCount = estimateTokens(streamedContent);
+      const threshold = getState().assistant?.optimizationThreshold || DEFAULT_OPTIMIZATION_THRESHOLD;
+      if (tokenCount > threshold) {
+        await optimizeLastResponse(streamingBubble, streamedContent);
+      }
+    }
 
   } catch (error) {
     // Annulation volontaire
@@ -882,6 +1036,182 @@ async function handleRegenerateMessage(btn) {
   await sendMessage(userText, { skipUserMessage: true });
 }
 
+/* ---------- Refresh timer (canvas cache) ---------- */
+
+/**
+ * Démarre le rafraîchissement périodique du cache du prompt.
+ * Toutes les 30s, compare le hash actuel du canvas avec le dernier connu.
+ * Si différent → vide le cache (le prochain message aura un prompt frais).
+ */
+function startRefreshTimer() {
+  stopRefreshTimer(); // Éviter les timers en double
+
+  // Enregistrer le hash initial
+  const graph = { nodes: getState().nodes, edges: getState().edges };
+  lastCanvasHash = hashContext(graph.nodes, graph.edges);
+
+  refreshTimer = setInterval(() => {
+    if (!promptEngine || !isOpen) return;
+
+    const current = { nodes: getState().nodes, edges: getState().edges };
+    const currentHash = hashContext(current.nodes, current.edges);
+
+    if (currentHash !== lastCanvasHash) {
+      lastCanvasHash = currentHash;
+      promptEngine.clearCache();
+    }
+  }, 30000); // 30 secondes
+}
+
+/**
+ * Arrête le rafraîchissement périodique.
+ */
+function stopRefreshTimer() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+/* ---------- Re-prepare prompt ---------- */
+
+/**
+ * Re-prépare le prompt actuel en ignorant le cache,
+ * puis met à jour la section dans le DOM.
+ */
+async function handleRepreparePrompt() {
+  if (isThinking || !promptEngine) return;
+
+  // Trouver le dernier message utilisateur
+  const body = panelEl?.querySelector('#app-chat-body');
+  const userMessages = body?.querySelectorAll('.chat-msg--user');
+  const lastUser = userMessages?.[userMessages.length - 1];
+  if (!lastUser) return;
+
+  const bubble = lastUser.querySelector('.chat-msg__bubble');
+  const userText = bubble?.textContent?.trim();
+  if (!userText) return;
+
+  try {
+    const graph = { nodes: getState().nodes, edges: getState().edges };
+    const prepared = await promptEngine.preparePrompt(userText, graph, { forceRefresh: true });
+    actions.setCurrentPrompt(prepared);
+
+    // Remplacer la section prompt de ce message (la dernière)
+    const oldSection = body?.querySelector('.chat-prompt-section:last-of-type');
+    if (oldSection) oldSection.remove();
+
+    renderPromptSection(prepared);
+  } catch (err) {
+    console.warn('[Chat] Échec re-préparation prompt:', err.message);
+  }
+}
+
+/* ---------- Post-optimisation ---------- */
+
+/**
+ * Post-optimisation de la réponse après streaming.
+ * Appelle le modèle pour condenser la réponse si elle dépasse le seuil.
+ * @param {HTMLElement} bubble - Bulle de message assistant
+ * @param {string} originalContent - Contenu original de la réponse
+ */
+async function optimizeLastResponse(bubble, originalContent) {
+  if (!bubble || !originalContent || isOptimizing) return;
+
+  isOptimizing = true;
+  const provider = getState().assistant?.provider;
+  const preparedPrompt = promptEngine?.getCurrentPrompt();
+
+  if (!provider?.id || !preparedPrompt) {
+    isOptimizing = false;
+    return;
+  }
+
+  // Afficher le badge d'optimisation en cours
+  showOptimizationBadge(bubble, 'optimizing');
+
+  try {
+    const optimized = await promptEngine.optimizeResponse(originalContent, preparedPrompt, provider);
+
+    if (optimized && optimized.trim() && optimized !== originalContent.trim()) {
+      // Remplacer le contenu de la bulle par la version optimisée
+      const bbl = bubble.querySelector('.chat-msg__bubble');
+      if (bbl) {
+        bbl.innerHTML = renderMarkdown(optimized);
+      }
+
+      // Mettre à jour le dernier message dans l'historique
+      actions.popLastChatMessage('assistant');
+      actions.pushChatMessage({ role: 'assistant', content: optimized, timestamp: Date.now() });
+
+      // Badge succès
+      showOptimizationBadge(bubble, 'done');
+
+      // Mettre à jour les stats d'optimisation cumulées
+      const originalTokens = estimateTokens(originalContent);
+      const optimizedTokens = estimateTokens(optimized);
+      const tokensSaved = Math.max(0, originalTokens - optimizedTokens);
+      if (tokensSaved > 0) {
+        actions.updateOptimizationStats(tokensSaved, originalTokens);
+      }
+    } else {
+      // Optimisation sans changement — badge discret
+      showOptimizationBadge(bubble, 'no-change');
+    }
+  } catch (err) {
+    console.warn('[Chat] Échec optimisation:', err.message);
+    showOptimizationBadge(bubble, 'failed');
+  } finally {
+    isOptimizing = false;
+  }
+}
+
+/**
+ * Affiche ou met à jour le badge d'optimisation dans une bulle.
+ * @param {HTMLElement} bubble - Élément .chat-msg
+ * @param {'optimizing'|'done'|'no-change'|'failed'} state
+ */
+function showOptimizationBadge(bubble, state) {
+  if (!bubble) return;
+
+  // Supprimer un badge existant
+  const old = bubble.querySelector('.chat-opt-badge');
+  if (old) old.remove();
+
+  const labels = {
+    optimizing: '⚡ Optimisation en cours...',
+    done: '⚡ Optimisé',
+    'no-change': '✓ Déjà concis',
+    failed: '⚠️ Optimisation non disponible',
+  };
+
+  const label = labels[state] || '';
+  if (!label) return;
+
+  const badge = document.createElement('span');
+  badge.className = `chat-opt-badge chat-opt-badge--${state}`;
+  badge.textContent = label;
+
+  if (state === 'optimizing') {
+    // Insérer le badge dans la bulle (pendant l'optimisation, la bulle contient
+    // le contenu original — on ajoute le badge en dessous)
+    const bbl = bubble.querySelector('.chat-msg__bubble');
+    if (bbl) {
+      bbl.appendChild(document.createElement('br'));
+      bbl.appendChild(badge);
+    }
+  } else {
+    // Après optimisation : ajouter le badge dans le conteneur d'actions
+    const actionsDiv = bubble.querySelector('.chat-msg__actions');
+    if (actionsDiv) {
+      actionsDiv.prepend(badge);
+    } else {
+      // Fallback : ajouter après la bulle
+      bubble.appendChild(badge);
+    }
+  }
+}
+
 /* ---------- Streaming stats ---------- */
 
 /**
@@ -910,11 +1240,10 @@ function startStreamingStats() {
     <span class="chat-stream-stats__bar"><span class="chat-stream-stats__bar-fill"></span></span>
   `;
 
-  // Insérer après le header-center, avant le header-right
+  // Insérer dans le header-center (en bas de la colonne, pleine largeur)
   const center = header.querySelector('.app__chat-header-center');
-  const right = header.querySelector('.app__chat-header-right');
-  if (center && right) {
-    header.insertBefore(statsBar, right);
+  if (center) {
+    center.appendChild(statsBar);
   } else {
     header.appendChild(statsBar);
   }
