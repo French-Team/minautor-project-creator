@@ -5,7 +5,9 @@
   "description": "conception de projet sans coder avec interface mermaid",
   "type": "module",
   "scripts": {
+    "env": "node scripts/env-server.mjs",
     "dev": "node scripts/dev.mjs",
+    "dev:vite": "vite --port 8081",
     "build": "vite build",
     "preview": "vite preview",
     "clear": "node scripts/clear.mjs",
@@ -18,11 +20,15 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "highlight.js": "^11.11.1",
     "jszip": "^3.10.1",
+    "marked": "^18.0.5",
+    "marked-highlight": "^2.2.4",
     "mermaid": "^10.9.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "jsdom": "^29.1.1",
     "vite": "^5.4.10",
     "vitest": "^4.1.8"
   }

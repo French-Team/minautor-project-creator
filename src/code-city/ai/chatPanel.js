@@ -18,15 +18,32 @@ import { getState, actions, subscribe } from '../state.js';
 import { streamChatCompletion, fetchLocalModels } from './aiClient.js';
 import { buildSystemMessages } from './systemPrompt.js';
 import { trimHistory } from './chatHistory.js';
-import { QUICK_ACTIONS } from './quickActions.js';
+import { QUICK_ACTION_CATEGORIES, ACTION_ICONS } from './quickActions.js';
 import { openProviderPanel } from './providerPanel.js';
-import { PROVIDER_PRESETS } from './providerPresets.js';
+import { getPreset, getAllPresets } from './providerLoader.js';
+import { renderMarkdown, renderStreamingMarkdown } from './markdownRenderer.js';
+
+/* ---------- Provider Greek names ---------- */
+
+const PROVIDER_TITLES = {
+  openrouter: 'Mina',
+  kilo: 'minautor',
+  gemini: 'Atlas',
+  'opencode-zen': 'Athéna',
+  mistral: 'Éole',
+  groq: 'Héphaïstos',
+  ollama: 'Dédale',
+  lmstudio: 'Prométhée',
+};
 
 let panelEl = null;
 let isOpen = false;
 let isThinking = false;
 let streamAbortController = null; // AbortController pour annuler le streaming en cours
-let streamRenderTimer = null; // Timer pour throttle le rendu markdown pendant le streaming
+let typewriterTimer = null;     // Timer pour effet typewriter (10ms) — ajout texte brut
+let markdownSyncTimer = null;   // Timer pour sync Markdown (500ms) — rendu formaté
+let displayedLength = 0;         // Nb de caractères déjà affichés dans la bulle
+let scrollThrottleTimer = null;  // Throttle pour scrollToBottom (un seul rAF à la fois)
 let streamStartTime = null; // Timestamp de début du streaming
 let streamTokenCount = 0; // Nombre de tokens reçus pendant le streaming
 let streamStatsTimer = null; // Timer pour rafraîchir l'indicateur stats
@@ -50,7 +67,8 @@ export async function initializeChatPanel() {
 
     panelEl = root;
 
-    // Rendre le contenu initial
+    // Rendre le contenu initial et mettre à jour le titre
+    updateChatTitle();
     renderPanelContent();
 
     // Câble la fermeture
@@ -58,35 +76,57 @@ export async function initializeChatPanel() {
     backdrop.addEventListener('click', closeChatPanel);
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && isOpen) closeChatPanel();
+
+      // Raccourci / : ouvrir le chat et focus l'input
+      // Ne pas intercepter si l'utilisateur tape dans un champ de texte
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const tag = e.target?.tagName?.toLowerCase();
+        const isEditable = tag === 'input' || tag === 'textarea' || e.target?.isContentEditable;
+        if (!isEditable) {
+          e.preventDefault();
+          if (!isOpen) {
+            openChatPanel();
+          } else {
+            panelEl?.querySelector('#chat-input')?.focus();
+          }
+        }
+      }
     });
 
     // Câble le bouton vider le chat
     if (clearBtn) {
       clearBtn.addEventListener('click', () => {
-        actions.clearChatHistory();
-        renderPanelContent();
+        const history = getState().assistant?.chatHistory || [];
+        if (history.length === 0) return;
+        const msg = `Vider l'historique (${history.length} message${history.length > 1 ? 's' : ''}) ?`;
+        if (window.confirm(msg)) {
+          actions.clearChatHistory();
+          renderPanelContent();
+        }
       });
     }
 
-    // Câble l'envoi de message (input)
-    const inputArea = panelEl.querySelector('#app-chat-body');
-    if (inputArea) {
-      inputArea.addEventListener('keydown', handleInputKeydown);
-      inputArea.addEventListener('click', handleChatBodyClick);
+    // Câble la délégation de clic sur le body des messages
+    // NOTE: handleInputKeydown est attaché directement au textarea dans renderInputArea
+    // car #chat-input est dans #chat-input-area (sibling de #app-chat-body), pas enfant.
+    const msgBody = panelEl.querySelector('#app-chat-body');
+    if (msgBody) {
+      msgBody.addEventListener('click', handleChatBodyClick);
     }
 
-    // Câble le sélecteur de modèle dans le header
-    const modelSelect = document.getElementById('app-chat-model-select');
-    if (modelSelect) {
-      modelSelect.addEventListener('change', handleModelSelectChange);
-      // Peupler la liste des modèles au démarrage
-      populateModelSelector();
+    // Câble la barre de providers dans le header
+    const providerBar = document.getElementById('app-chat-provider-bar');
+    if (providerBar) {
+      providerBar.addEventListener('click', handleProviderBarClick);
+      // Peupler la barre des providers au démarrage
+      populateProviderBar();
     }
 
-    // Écouter les changements de provider pour rafraîchir le sélecteur et le panneau
+    // Écouter les changements de provider pour rafraîchir la barre, le titre et le panneau
     subscribe((_state, meta) => {
       if (meta.type === 'assistant:provider') {
-        populateModelSelector();
+        populateProviderBar();
+        updateChatTitle();
         if (isOpen) renderPanelContent();
       }
     });
@@ -111,8 +151,10 @@ export async function openChatPanel(initialPrompt = '') {
   isOpen = true;
   applyOpenState(panelEl, true);
 
-  // Re-peupler le sélecteur de modèle à chaque ouverture
-  populateModelSelector();
+  // Re-peupler la barre providers, mettre à jour le titre et re-rendre le contenu
+  populateProviderBar();
+  updateChatTitle();
+  renderPanelContent();
 
   if (initialPrompt) {
     await sendMessage(initialPrompt);
@@ -157,6 +199,22 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Retourne le HTML SVG pour une icône d'action.
+ * @param {string} key - Clé dans ACTION_ICONS
+ * @param {number} [size=14] - Taille du SVG
+ * @returns {string}
+ */
+function getActionIcon(key, size = 14) {
+  const svg = ACTION_ICONS[key];
+  if (!svg) return '';
+  // Ajuster la taille si nécessaire
+  if (size !== 14) {
+    return svg.replace(/width="14"/, `width="${size}"`).replace(/height="14"/, `height="${size}"`);
+  }
+  return svg;
+}
+
 /* ---------- Rendering ---------- */
 
 function renderPanelContent() {
@@ -197,6 +255,10 @@ function renderWelcome() {
   const nodeCount = graph.nodes.filter(n => n.type !== 'hub').length;
   const edgeCount = graph.edges.length;
 
+  // Utiliser le nom grec du provider actif, ou 'Mina' par défaut
+  const provider = getState().assistant?.provider;
+  const name = (provider?.id && PROVIDER_TITLES[provider.id]) || 'Mina';
+
   let contextHint = '';
   if (nodeCount > 0) {
     contextHint = `<span class="chat-welcome-context">Je vois ton canvas avec ${nodeCount} nœud${nodeCount > 1 ? 's' : ''} et ${edgeCount} arête${edgeCount > 1 ? 's' : ''}.</span>`;
@@ -204,7 +266,7 @@ function renderWelcome() {
 
   return `
     <div class="chat-welcome">
-      <strong>Bonjour ! Je suis Mina</strong>, ton assistant de conception.<br>
+      <strong>Bonjour ! Je suis ${escapeHtml(name)}</strong>, ton assistant de conception.<br>
       Comment puis-je t'aider avec ton diagramme ?
       ${contextHint}
     </div>
@@ -214,7 +276,7 @@ function renderWelcome() {
 function renderProviderNotice() {
   return `
     <div class="chat-notice">
-      <span class="chat-notice__icon">⚙️</span>
+      <span class="chat-notice__icon">${getActionIcon('settings', 16)}</span>
       <span class="chat-notice__text">
         Configure un provider dans le panneau <strong>Providers</strong> pour commencer à discuter avec Mina.
       </span>
@@ -271,24 +333,32 @@ function renderQuickActions() {
     return;
   }
 
-  quickBar.innerHTML = `
-    <select class="chat-quick-select" id="chat-quick-select" title="Actions rapides">
-      <option value="" disabled selected>⚡ Actions rapides…</option>
-      ${QUICK_ACTIONS.map(a => `<option value="${a.id}" title="${escapeHtml(a.prompt)}">${a.label}</option>`).join('')}
-    </select>
-  `;
+  // Aplatir toutes les actions pour recherche
+  const allActions = QUICK_ACTION_CATEGORIES.flatMap(cat => cat.actions);
 
-  // Câble le changement de sélection
-  const select = quickBar.querySelector('#chat-quick-select');
-  if (select) {
+  quickBar.innerHTML = QUICK_ACTION_CATEGORIES.map(cat => `
+    <div class="chat-quick-category">
+      <span class="chat-quick-category__label">
+        ${getActionIcon(cat.icon)}
+        <span>${cat.label}</span>
+      </span>
+      <select class="chat-quick-select" data-category="${cat.id}" title="${cat.label}">
+        <option value="" disabled selected>${cat.label}…</option>
+        ${cat.actions.map(a => `<option value="${a.id}" title="${escapeHtml(a.prompt)}">${a.label}</option>`).join('')}
+      </select>
+    </div>
+  `).join('');
+
+  // Câble le changement de sélection pour chaque select
+  quickBar.querySelectorAll('.chat-quick-select').forEach(select => {
     select.addEventListener('change', () => {
-      const action = QUICK_ACTIONS.find(a => a.id === select.value);
+      const action = allActions.find(a => a.id === select.value);
       if (action) {
         sendMessage(action.prompt);
         select.selectedIndex = 0;
       }
     });
-  }
+  });
 }
 
 function renderInputArea() {
@@ -303,7 +373,7 @@ function renderInputArea() {
       <textarea
         class="chat-input"
         id="chat-input"
-        placeholder=""
+        placeholder="Que veux-tu faire ?"
         rows="1"
         ${disabled ? 'disabled' : ''}
       ></textarea>
@@ -321,13 +391,15 @@ function renderInputArea() {
     </button>
   `;
 
-  // Auto-resize textarea
+  // Auto-resize + Enter key handler sur le textarea
+  // (attaché ici car le textarea est recréé à chaque renderInputArea)
   const textarea = inputArea.querySelector('#chat-input');
   if (textarea) {
     textarea.addEventListener('input', () => {
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
     });
+    textarea.addEventListener('keydown', handleInputKeydown);
   }
 
   // Send button click
@@ -393,19 +465,23 @@ function handleChatBodyClick(e) {
 
 /* ---------- Send message ---------- */
 
-async function sendMessage(text) {
+async function sendMessage(text, options = {}) {
+  const { skipUserMessage = false } = options;
+
   if (!text.trim() || isThinking) return;
 
   const provider = getState().assistant?.provider;
   if (!provider?.id) {
-    addSystemMessage('⚠️ Configure un provider dans le panneau Providers pour commencer.', 'warning');
+    addSystemMessage('Configure un provider dans le panneau Providers pour commencer.', 'warning');
     return;
   }
 
-  // Ajouter le message utilisateur dans le DOM et le state
-  appendMessageToDOM('user', text);
-  actions.pushChatMessage({ role: 'user', content: text, timestamp: Date.now() });
-  setInputValue('');
+  // Ajouter le message utilisateur dans le DOM et le state (sauf pour régénération)
+  if (!skipUserMessage) {
+    appendMessageToDOM('user', text);
+    actions.pushChatMessage({ role: 'user', content: text, timestamp: Date.now() });
+    setInputValue('');
+  }
   scrollToBottom();
 
   // Indiquer que l'assistant réfléchit
@@ -435,19 +511,31 @@ async function sendMessage(text) {
       onToken(token) {
         streamedContent += token;
         streamTokenCount++;
-        // Throttle le rendu markdown : max 1 re-render toutes les 40ms
-        if (!streamRenderTimer) {
-          streamRenderTimer = setTimeout(() => {
-            streamRenderTimer = null;
-            updateStreamingBubble(streamingBubble, streamedContent);
+
+        // Typewriter (10ms) : ajouter les nouveaux caractères en texte échappé
+        if (!typewriterTimer) {
+          typewriterTimer = setTimeout(() => {
+            typewriterTimer = null;
+            appendTypewriterText(streamingBubble, streamedContent);
             updateStreamingStats();
             scrollToBottom();
-          }, 40);
+          }, 10);
+        }
+
+        // Markdown sync (500ms) : ré-appliquer le rendu formaté complet
+        if (!markdownSyncTimer) {
+          markdownSyncTimer = setTimeout(() => {
+            markdownSyncTimer = null;
+            syncMarkdownBubble(streamingBubble, streamedContent);
+            updateStreamingStats();
+            scrollToBottom();
+          }, 500);
         }
       },
       onDone() {
-        // Vider le timer de throttle restant
-        if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
+        // Vider les timers de typewriter et markdown sync
+        if (typewriterTimer) { clearTimeout(typewriterTimer); typewriterTimer = null; }
+        if (markdownSyncTimer) { clearTimeout(markdownSyncTimer); markdownSyncTimer = null; }
         // Finaliser les stats
         stopStreamingStats();
         // Finaliser : retirer le curseur de streaming, sauvegarder dans le state
@@ -463,8 +551,7 @@ async function sendMessage(text) {
         } else {
           // Supprimer la bulle vide
           streamingBubble.remove();
-          const errorMsg = `❌ Erreur : ${err.message}`;
-          appendMessageToDOM('system', errorMsg, 'error');
+          appendMessageToDOM('system', `Erreur : ${err.message}`, 'error');
           addRetryButton(text);
         }
       },
@@ -486,14 +573,15 @@ async function sendMessage(text) {
         actions.pushChatMessage({ role: 'assistant', content: streamedContent, timestamp: Date.now() });
       } else {
         streamingBubble.remove();
-        appendMessageToDOM('system', `❌ Erreur : ${error.message}`, 'error');
+        appendMessageToDOM('system', `Erreur : ${error.message}`, 'error');
         addRetryButton(text);
       }
     }
   } finally {
     isThinking = false;
     streamAbortController = null;
-    if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
+    if (typewriterTimer) { clearTimeout(typewriterTimer); typewriterTimer = null; }
+    if (markdownSyncTimer) { clearTimeout(markdownSyncTimer); markdownSyncTimer = null; }
     stopStreamingStats();
     showThinkingIndicator(false);
     showStopButton(false);
@@ -519,6 +607,7 @@ function createStreamingBubble() {
 
   const typingEl = body.querySelector('#chat-typing');
   const msgDiv = document.createElement('div');
+  displayedLength = 0;
   msgDiv.className = 'chat-msg chat-msg--assistant chat-msg--streaming';
   msgDiv.innerHTML = `<div class="chat-msg__bubble"><span class="chat-streaming-cursor"></span></div>`;
 
@@ -539,15 +628,40 @@ function createStreamingBubble() {
 }
 
 /**
- * Met à jour le contenu de la bulle de streaming avec le markdown rendu.
- * @param {HTMLElement} bubble - Éléments .chat-msg--streaming
- * @param {string} content - Contenu accumulé depuis le début du streaming
+ * Ajoute les nouveaux caractères (delta) en texte échappé dans la bulle.
+ * Couche « rapide » du typewriter : les caractères arrivent en temps réel
+ * sans attendre le rendu Markdown.
+ * @param {HTMLElement} bubble - Élément .chat-msg--streaming
+ * @param {string} fullContent - Contenu complet accumulé depuis le début
  */
-function updateStreamingBubble(bubble, content) {
+function appendTypewriterText(bubble, fullContent) {
   if (!bubble) return;
   const bbl = bubble.querySelector('.chat-msg__bubble');
   if (!bbl) return;
-  bbl.innerHTML = renderMarkdown(content) + '<span class="chat-streaming-cursor"></span>';
+
+  const delta = fullContent.slice(displayedLength);
+  if (!delta) return;
+
+  // Ajouter les nouveaux caractères en texte brut (effet machine à écrire)
+  bbl.appendChild(document.createTextNode(delta));
+  displayedLength = fullContent.length;
+}
+
+/**
+ * Remplace tout le contenu de la bulle par le rendu Markdown formaté.
+ * Couche « lente » du typewriter : applique la mise en forme toutes les 500ms.
+ * @param {HTMLElement} bubble - Élément .chat-msg--streaming
+ * @param {string} fullContent - Contenu complet accumulé depuis le début
+ */
+function syncMarkdownBubble(bubble, fullContent) {
+  if (!bubble) return;
+  const bbl = bubble.querySelector('.chat-msg__bubble');
+  if (!bbl) return;
+
+  // Remplacer tout le contenu par le rendu Markdown + curseur
+  bbl.innerHTML = renderStreamingMarkdown(fullContent) + '<span class="chat-streaming-cursor"></span>';
+  // Tout le contenu est maintenant dans le HTML rendu
+  displayedLength = fullContent.length;
 }
 
 /**
@@ -573,7 +687,7 @@ function addRetryButton(text) {
   if (retryEl) {
     const retryBtn = document.createElement('button');
     retryBtn.className = 'chat-msg__retry';
-    retryBtn.textContent = '🔄 Réessayer';
+    retryBtn.innerHTML = `${getActionIcon('refresh')} Réessayer`;
     retryBtn.dataset.retryText = text;
     retryEl.appendChild(retryBtn);
   }
@@ -605,7 +719,22 @@ function appendMessageToDOM(role, content, type = '') {
     addCopyButtonToBubble(msgDiv, content);
   } else {
     msgDiv.className = `chat-msg chat-msg--system${type ? ' chat-msg--' + type : ''}`;
-    msgDiv.innerHTML = `<div class="chat-msg__bubble">${escapeHtml(content)}</div>`;
+    const bbl = document.createElement('div');
+    bbl.className = 'chat-msg__bubble';
+    // Ajouter icône inline selon le type
+    if (type === 'warning') {
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'chat-msg__inline-icon';
+      iconSpan.innerHTML = getActionIcon('alert-triangle');
+      bbl.appendChild(iconSpan);
+    } else if (type === 'error') {
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'chat-msg__inline-icon';
+      iconSpan.innerHTML = getActionIcon('x-circle');
+      bbl.appendChild(iconSpan);
+    }
+    bbl.appendChild(document.createTextNode(content));
+    msgDiv.appendChild(bbl);
   }
 
   // Insérer avant l'indicateur de frappe
@@ -637,12 +766,13 @@ function setInputValue(value) {
 }
 
 function scrollToBottom() {
+  if (scrollThrottleTimer) return;
   const body = panelEl?.querySelector('#app-chat-body');
-  if (body) {
-    requestAnimationFrame(() => {
-      body.scrollTop = body.scrollHeight;
-    });
-  }
+  if (!body) return;
+  scrollThrottleTimer = requestAnimationFrame(() => {
+    scrollThrottleTimer = null;
+    body.scrollTop = body.scrollHeight;
+  });
 }
 
 function formatTime(timestamp) {
@@ -729,7 +859,11 @@ function findPreviousUserMessage(btn) {
 
 /**
  * Régénère la réponse assistant en réenvoyant le même prompt user.
- * Supprime le message assistant courant puis relance la génération.
+ * Supprime seulement le dernier message assistant du DOM et du state,
+ * puis relance la génération sans dupliquer le message utilisateur.
+ *
+ * Correction (B2) : utilise popLastChatMessage au lieu de clearChatHistory
+ * + re-add, pour éviter de persister un historique vide en cas d'échec.
  */
 async function handleRegenerateMessage(btn) {
   if (isThinking) return;
@@ -737,47 +871,53 @@ async function handleRegenerateMessage(btn) {
   const userText = findPreviousUserMessage(btn);
   if (!userText) return;
 
-  // Supprimer le message assistant courant du DOM et du state
+  // Supprimer le message assistant courant du DOM
   const msgDiv = btn.closest('.chat-msg');
-  if (msgDiv) {
-    msgDiv.remove();
-    // Copier l'historique AVANT de le vider (clearChatHistory vide le tableau)
-    const historyCopy = [...getState().assistant.chatHistory];
-    // Retirer le dernier message assistant
-    if (historyCopy.length > 0 && historyCopy[historyCopy.length - 1].role === 'assistant') {
-      historyCopy.pop();
-    }
-    actions.clearChatHistory();
-    historyCopy.forEach(m => actions.pushChatMessage(m));
-  }
+  if (msgDiv) msgDiv.remove();
 
-  // Relancer la génération
-  await sendMessage(userText);
+  // Pop le dernier message assistant du state + persist (une seule opération)
+  actions.popLastChatMessage('assistant');
+
+  // Relancer la génération sans ajouter de nouveau message user
+  await sendMessage(userText, { skipUserMessage: true });
 }
 
 /* ---------- Streaming stats ---------- */
 
 /**
  * Lance le suivi des stats de streaming (tokens + temps écoulé).
- * Crée un élément DOM dans la zone d'input et met à jour toutes les 200ms.
+ * Crée un élément DOM dans le header du chat (à côté du titre)
+ * avec une barre de progression. Met à jour toutes les 200ms.
  */
 function startStreamingStats() {
   streamStartTime = Date.now();
   streamTokenCount = 0;
 
-  // Créer l'élément stats dans la zone d'input
-  const inputArea = panelEl?.querySelector('#chat-input-area');
-  if (!inputArea) return;
-
   // Supprimer un ancien stats bar s'il existe
-  const old = inputArea.querySelector('.chat-stream-stats');
+  const old = panelEl?.querySelector('.chat-stream-stats');
   if (old) old.remove();
+
+  // Créer l'élément stats dans le header (entre le centre et les boutons)
+  const header = panelEl?.querySelector('.app__chat-header');
+  if (!header) return;
 
   const statsBar = document.createElement('div');
   statsBar.className = 'chat-stream-stats';
   statsBar.id = 'chat-stream-stats';
-  statsBar.innerHTML = '<span class="chat-stream-stats__text">0 tokens · 0.0s</span>';
-  inputArea.prepend(statsBar);
+  statsBar.innerHTML = `
+    <span class="chat-stream-stats__icon">${getActionIcon('zap', 11)}</span>
+    <span class="chat-stream-stats__text">0 tok · 0.0s</span>
+    <span class="chat-stream-stats__bar"><span class="chat-stream-stats__bar-fill"></span></span>
+  `;
+
+  // Insérer après le header-center, avant le header-right
+  const center = header.querySelector('.app__chat-header-center');
+  const right = header.querySelector('.app__chat-header-right');
+  if (center && right) {
+    header.insertBefore(statsBar, right);
+  } else {
+    header.appendChild(statsBar);
+  }
 
   // Timer pour rafraîchir l'affichage
   streamStatsTimer = setInterval(() => {
@@ -786,18 +926,28 @@ function startStreamingStats() {
 }
 
 /**
- * Met à jour l'affichage des stats de streaming.
+ * Met à jour l'affichage des stats de streaming (texte + barre).
  */
 function updateStreamingStats() {
-  const statsEl = panelEl?.querySelector('#chat-stream-stats .chat-stream-stats__text');
+  const statsEl = panelEl?.querySelector('#chat-stream-stats');
   if (!statsEl || !streamStartTime) return;
 
   const elapsed = ((Date.now() - streamStartTime) / 1000).toFixed(1);
-  statsEl.textContent = `${streamTokenCount} token${streamTokenCount > 1 ? 's' : ''} · ${elapsed}s`;
+  const textEl = statsEl.querySelector('.chat-stream-stats__text');
+  const barFill = statsEl.querySelector('.chat-stream-stats__bar-fill');
+
+  if (textEl) textEl.textContent = `${streamTokenCount} tok · ${elapsed}s`;
+
+  // Barre de progression : augmente avec le temps (max 30s = 100%)
+  if (barFill) {
+    const pct = Math.min((elapsed / 30) * 100, 100);
+    barFill.style.width = `${pct}%`;
+  }
 }
 
 /**
- * Arrête le suivi des stats et affiche le résultat final.
+ * Arrête le suivi des stats : affiche le résultat final, puis
+ * disparaît après 2s (fade out).
  */
 function stopStreamingStats() {
   if (!streamStatsTimer && !streamStartTime) return; // Déjà arrêté
@@ -807,149 +957,133 @@ function stopStreamingStats() {
   }
 
   // Mettre à jour une dernière fois avec le résultat final
-  const statsEl = panelEl?.querySelector('#chat-stream-stats .chat-stream-stats__text');
+  const statsEl = panelEl?.querySelector('#chat-stream-stats');
   if (statsEl && streamStartTime) {
     const elapsed = ((Date.now() - streamStartTime) / 1000).toFixed(1);
-    statsEl.textContent = `${streamTokenCount} token${streamTokenCount > 1 ? 's' : ''} · ${elapsed}s`;
-    // Ajouter la classe finale (couleur différente)
-    const bar = statsEl.closest('.chat-stream-stats');
-    if (bar) bar.classList.add('chat-stream-stats--done');
+    const textEl = statsEl.querySelector('.chat-stream-stats__text');
+    const barFill = statsEl.querySelector('.chat-stream-stats__bar-fill');
+    if (textEl) textEl.textContent = `${streamTokenCount} tok · ${elapsed}s`;
+    if (barFill) barFill.style.width = '100%';
+
+    // Classe finale → déclenche le fade out
+    statsEl.classList.add('chat-stream-stats--done');
+
+    // Supprimer l'élément du DOM après 2s
+    setTimeout(() => {
+      if (statsEl.parentNode) statsEl.remove();
+    }, 2000);
   }
 
   streamStartTime = null;
   streamTokenCount = 0;
 }
 
-/* ---------- Model selector (header) ---------- */
+/* ---------- Chat title (Greek names) ---------- */
 
 /**
- * Peuple le sélecteur de modèle dans le header du chat.
- * Charge les modèles du preset courant + les modèles locaux dynamiques.
+ * Met à jour le titre du chat selon le provider sélectionné.
+ * Utilise les noms grecs de PROVIDER_TITLES, ou 'Mina' par défaut si aucun provider actif.
  */
-async function populateModelSelector() {
-  const select = document.getElementById('app-chat-model-select');
-  if (!select) return;
+function updateChatTitle() {
+  const titleEl = document.getElementById('app-chat-title');
+  if (!titleEl) return;
 
   const provider = getState().assistant?.provider;
-  if (!provider?.id) {
-    select.innerHTML = '<option value="">Aucun provider</option>';
-    return;
+  const providerId = provider?.id;
+
+  if (providerId && PROVIDER_TITLES[providerId]) {
+    titleEl.textContent = PROVIDER_TITLES[providerId];
+  } else {
+    titleEl.textContent = 'Mina';
   }
 
-  const preset = PROVIDER_PRESETS.find(p => p.id === provider.id);
-  let models = [];
+  // Déclencher l'animation de fondu : retirer puis ré-ajouter la classe
+  titleEl.classList.remove('chat-title--fade');
+  // Forcer un reflow pour que l'animation redémarre
+  void titleEl.offsetWidth;
+  titleEl.classList.add('chat-title--fade');
+}
 
-  if (preset?.models?.length) {
-    models = preset.models.map(m => ({ id: m.id, name: m.name || m.id }));
-  }
+/* ---------- Provider bar (header) ---------- */
 
-  // Pour les providers locaux, charger les modèles disponibles dynamiquement
-  if (preset?.category === 'local') {
-    try {
-      const dynamicModels = await fetchLocalModels(provider);
-      if (dynamicModels.length > 0) {
-        models = dynamicModels.map(m => ({ id: m.id, name: m.name || m.id }));
-      }
-    } catch {
-      // Ignorer — utiliser les modèles du preset
-    }
-  }
+/**
+ * Retourne l'icône SVG pour un provider selon son icon type.
+ */
+function getProviderIcon(iconType) {
+  const icons = {
+    cloud: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>`,
+    sparkles: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
+    code: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
+    server: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`,
+  };
+  return icons[iconType] || icons.cloud;
+}
 
-  if (models.length === 0) {
-    // Afficher au moins le modèle courant
-    const currentModel = provider.model || '';
-    select.innerHTML = currentModel
-      ? `<option value="${escapeHtml(currentModel)}">${escapeHtml(currentModel)}</option>`
-      : '<option value="">Aucun modèle</option>';
-    return;
-  }
+/**
+ * Peuple la barre de providers dans le header du chat.
+ * Affiche les boutons des providers disponibles (depuis provider-configs.json).
+ */
+function populateProviderBar() {
+  const bar = document.getElementById('app-chat-provider-bar');
+  if (!bar) return;
 
-  select.innerHTML = models.map(m => {
-    const selected = m.id === provider.model ? 'selected' : '';
-    return `<option value="${escapeHtml(m.id)}" ${selected}>${escapeHtml(m.name)}</option>`;
+  const allProviders = getAllPresets();
+  const currentProvider = getState().assistant?.provider;
+  const configs = getState().assistant?.providerConfigs || {};
+
+  bar.innerHTML = allProviders.map(p => {
+    const isActive = currentProvider?.id === p.id;
+    const isConfigured = isActive
+      ? currentProvider?.isConnected
+      : !!(configs[p.id]?.isConnected);
+    return `
+      <button
+        type="button"
+        class="app__chat-provider-btn ${isActive ? 'is-active' : ''} ${!isConfigured ? 'is-unconfigured' : ''}"
+        data-provider-id="${escapeHtml(p.id)}"
+        title="${escapeHtml(p.name)}${!isConfigured ? ' — non configuré' : ''}"
+      >
+        <span class="app__chat-provider-btn__icon">${getProviderIcon(p.icon)}</span>
+        <span class="app__chat-provider-btn__label">${escapeHtml(p.name)}</span>
+      </button>
+    `;
   }).join('');
 }
 
 /**
- * Gère le changement de sélection du modèle dans le header.
+ * Gère le clic sur un bouton provider de la barre.
+ * - Si le provider cliqué est déjà actif → juste fermer le panneau chat
+ * - Si le provider n'est pas configuré → ouvrir le panneau Providers pour le configurer
+ * - Si le provider est configuré mais pas actif → ouvrir le panneau Providers (étape modèle)
  */
-function handleModelSelectChange(e) {
-  const modelId = e.target.value;
-  if (!modelId) return;
-  actions.updateProvider({ model: modelId });
+function handleProviderBarClick(e) {
+  const btn = e.target.closest('.app__chat-provider-btn');
+  if (!btn) return;
+
+  const providerId = btn.dataset.providerId;
+  if (!providerId) return;
+
+  const currentProvider = getState().assistant?.provider;
+  const configs = getState().assistant?.providerConfigs || {};
+  const isConfigured = currentProvider?.id === providerId
+    ? currentProvider?.isConnected
+    : !!(configs[providerId]?.isConnected);
+
+  // Si le provider cliqué est déjà actif, juste fermer le chat
+  if (currentProvider?.id === providerId) {
+    closeChatPanel();
+    return;
+  }
+
+  // Provider non configuré → rediriger vers le panneau Providers
+  if (!isConfigured) {
+    closeChatPanel();
+    openProviderPanel();
+    return;
+  }
+
+  // Provider configuré → sélection directe
+  actions.setProvider(providerId);
 }
 
-/* ---------- Markdown renderer (simple) ---------- */
 
-function renderMarkdown(text) {
-  if (!text) return '';
-
-  // --- Étape 1 : extraire les blocs de code pour les protéger ---
-  const codeBlocks = [];
-  let cleaned = text.replace(/```(\w*)\r?\n([\s\S]*?)```/g, (_, lang, code) => {
-    const idx = codeBlocks.length;
-    codeBlocks.push(`<pre class="chat-msg__bubble-pre"><code>${escapeHtml(code.trimEnd())}</code></pre>`);
-    return `\x00CB${idx}\x00`;
-  });
-
-  // --- Étape 2 : extraire le code inline ---
-  const inlineCodes = [];
-  cleaned = cleaned.replace(/`([^`\n]+)`/g, (_, code) => {
-    const idx = inlineCodes.length;
-    inlineCodes.push(`<code>${escapeHtml(code)}</code>`);
-    return `\x00IC${idx}\x00`;
-  });
-
-  // --- Étape 3 : échapper le HTML restant ---
-  let html = escapeHtml(cleaned);
-
-  // --- Étape 4 : Markdown -> HTML ---
-  // Headers (# … ####)
-  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-  // Horizontal rule
-  html = html.replace(/^---+$/gm, '<hr>');
-
-  // Blockquotes
-  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-
-  // Bold + Italic
-  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-  // Strikethrough
-  html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
-
-  // Links [text](url)
-  html = html.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-
-  // Lists non ordonnées
-  html = html.replace(/^[\-*] (.+)$/gm, '\x00ULI$1\x00');
-  html = html.replace(/((?:\x00ULI[^\x00]*\x00\n?)+)/g, (m) => {
-    const items = m.replace(/\x00ULI/g, '<li>').replace(/\x00/g, '</li>');
-    return '<ul>' + items + '</ul>';
-  });
-
-  // Lists ordonnées
-  html = html.replace(/^\d+\. (.+)$/gm, '\x00OLI$1\x00');
-  html = html.replace(/((?:\x00OLI[^\x00]*\x00\n?)+)/g, (m) => {
-    const items = m.replace(/\x00OLI/g, '<li>').replace(/\x00/g, '</li>');
-    return '<ol>' + items + '</ol>';
-  });
-
-  // Paragraphs : double saut de ligne
-  html = html
-    .split(/\n{2,}/)
-    .map(p => p.trim() ? `<p>${p.replace(/\n/g, '<br>')}</p>` : '')
-    .join('');
-
-  // --- Étape 5 : restaurer les blocs de code ---
-  html = html.replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[Number(i)]);
-  html = html.replace(/\x00IC(\d+)\x00/g, (_, i) => inlineCodes[Number(i)]);
-
-  return html;
-}

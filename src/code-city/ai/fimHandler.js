@@ -6,7 +6,7 @@
  *   - Appelle fimCompletion() de aiClient.js
  *   - Insère le résultat dans le textarea avec animation de surbrillance
  *
- * Le FIM est exclusif au provider Mistral/Codestral.
+ * Le FIM est exclusif au provider Mistral (modèles codestral).
  * Timeout 15s (plus court que le chat car c'est de la complétion inline).
  *
  * @module fimHandler
@@ -52,8 +52,8 @@ export async function triggerFimCompletion(textarea, onStatus) {
     onStatus?.('error', 'Configure un provider dans le panneau Providers pour utiliser la complétion FIM.');
     return null;
   }
-  if (provider.id !== 'codestral') {
-    onStatus?.('error', 'La complétion FIM est disponible uniquement avec Codestral.');
+  if (provider.id !== 'mistral') {
+    onStatus?.('error', 'La complétion FIM est disponible uniquement avec Mistral.');
     return null;
   }
 
@@ -117,5 +117,5 @@ export function insertFimCompletion(textarea, completion) {
  */
 export function isFimAvailable() {
   const provider = getState().assistant?.provider;
-  return provider?.id === 'codestral';
+  return provider?.id === 'mistral';
 }

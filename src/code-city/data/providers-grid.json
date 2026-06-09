@@ -1,0 +1,22 @@
+{
+  "sections": [
+    {
+      "title": "En ligne",
+      "providers": [
+        { "id": "openrouter", "order": 1, "visible": true },
+        { "id": "gemini", "order": 2, "visible": true },
+        { "id": "kilo", "order": 3, "visible": true },
+        { "id": "opencode-zen", "order": 4, "visible": true },
+        { "id": "mistral", "order": 5, "visible": true },
+        { "id": "groq", "order": 6, "visible": true }
+      ]
+    },
+    {
+      "title": "Local",
+      "providers": [
+        { "id": "ollama", "order": 1, "visible": true },
+        { "id": "lmstudio", "order": 2, "visible": true }
+      ]
+    }
+  ]
+}

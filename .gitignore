@@ -9,3 +9,12 @@ Thumbs.db
 test-results/
 playwright-report/
 .private/
+
+# Runtime state (provider config, chat history)
+minautor-state.json
+
+# Provider runtime configs (one file per provider)
+data/providers/
+data/active-provider.json
+
+nul

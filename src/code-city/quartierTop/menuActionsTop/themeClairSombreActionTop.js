@@ -70,9 +70,13 @@ function applyTheme(theme) {
   if (theme === 'dark') {
     app?.classList.remove('theme-light');
     app?.classList.add('theme-dark');
+    document.body.classList.remove('theme-light');
+    document.body.classList.add('theme-dark');
   } else {
     app?.classList.remove('theme-dark');
     app?.classList.add('theme-light');
+    document.body.classList.remove('theme-dark');
+    document.body.classList.add('theme-light');
   }
 
   document.body.classList.add('theme-transition');

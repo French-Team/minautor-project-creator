@@ -1,25 +1,60 @@
 /**
- * API Keys Modal — Gestion des clés API
+ * API Keys Modal — Gestion multi-clé des clés API
  *
- * Modale permettant d'ajouter, éditer, voir et supprimer des clés API.
- * Les clés sont stockées dans le state (localStorage via state.js).
- *
- * Usage :
- *   import { openApiKeysModal } from './apiKeysModal.js';
- *   openApiKeysModal();
+ * Les clés sont stockées dans le fichier .env à la racine du projet.
+ * Chaque provider peut avoir plusieurs clés (base + _1, _2, etc.)
+ * pour la rotation LRU lors de rate limits (429).
  *
  * @module apiKeysModal
  */
 
-import { getState, actions } from '../state.js';
-import { PROVIDER_PRESETS } from './providerPresets.js';
+import { getAllPresets, getPresetsByCategory } from './providerLoader.js';
+import validationModels from '../data/validation-models.json';
+import { loadEnvKeys, getCachedEnv, getAllKeysForEnvKey, invalidateCache } from './envLoader.js';
 import { toast } from './toast.js';
+import { chatCompletion } from './aiClient.js';
+import { getState, actions } from '../state.js';
 
 let modalEl = null;
+let navigationInterceptor = null;
 
-/**
- * Échappe le HTML pour insertion sécurisée.
- */
+// Empêche la navigation pendant que la modal est ouverte
+function activateNavigationGuard() {
+  if (navigationInterceptor) return;
+  
+  // Intercepter les événements qui pourraient causer un refresh
+  const preventNav = (e) => {
+    if (modalEl) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      console.warn('[apiKeysModal] Navigation bloquée pendant la modal');
+      return false;
+    }
+  };
+  
+  // NOTE: On n'intercepte plus beforeunload car preventDefault() sur beforeunload
+  // affiche le popup "Actualiser le site web ?" du navigateur, ce qui est perturbant.
+  // Le vrai cause du refresh semble être une extension externe (cf. "webclient-infield.html" dans Network).
+  
+  // Bloquer popstate (changements d'historique)
+  window.addEventListener('popstate', preventNav, true);
+  // Bloquer submit de formulaire
+  document.addEventListener('submit', preventNav, true);
+  
+  navigationInterceptor = preventNav;
+}
+
+function deactivateNavigationGuard() {
+  if (!navigationInterceptor) return;
+  
+  window.removeEventListener('popstate', navigationInterceptor, true);
+  document.removeEventListener('submit', navigationInterceptor, true);
+  
+  navigationInterceptor = null;
+}
+
+// --- Helpers ---
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -28,30 +63,80 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-/**
- * Masque une clé API : affiche les 4 premiers et les 4 derniers caractères.
- */
 function maskKey(key) {
   if (!key) return '';
   if (key.length <= 8) return '••••••••';
   return key.slice(0, 4) + '•'.repeat(Math.min(key.length - 8, 20)) + key.slice(-4);
 }
 
-/**
- * Retourne le nom du provider par son ID.
- */
 function getProviderName(providerId) {
-  const preset = PROVIDER_PRESETS.find((p) => p.id === providerId);
+  const preset = getAllPresets().find((p) => p.id === providerId);
   return preset?.name || providerId;
 }
 
-/**
- * Ouvre la modale de gestion des clés API.
- */
-export function openApiKeysModal() {
+function getProviderEnvKey(providerId) {
+  const preset = getAllPresets().find((p) => p.id === providerId);
+  return preset?.envKey || null;
+}
+
+// --- API .env ---
+
+async function apiEnvGetKeys(baseEnvKey) {
+  const resp = await fetch('/api/env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'getKeys', baseEnvKey }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  return resp.json();
+}
+
+async function apiEnvAddKey(baseEnvKey, value) {
+  const resp = await fetch('/api/env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'addKey', baseEnvKey, value }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  return resp.json();
+}
+
+async function apiEnvDeleteKey(key) {
+  const resp = await fetch('/api/env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'deleteKey', key }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  return resp.json();
+}
+
+async function apiEnvSetKey(key, value) {
+  const resp = await fetch('/api/env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'setKey', key, value }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  return resp.json();
+}
+
+// --- Modal ---
+
+export async function openApiKeysModal() {
   if (modalEl) return;
 
-  const keys = getState().assistant?.apiKeys || [];
+  // Activer la protection contre la navigation
+  activateNavigationGuard();
+
+  // Charger les clés avant d'afficher la modal
+  let keysHtml;
+  try {
+    await loadEnvKeys();
+    keysHtml = await renderKeysList();
+  } catch (e) {
+    keysHtml = '<div class="api-keys-modal__error">Erreur lors du chargement des clés API</div>';
+  }
 
   modalEl = document.createElement('div');
   modalEl.className = 'api-keys-modal is-open';
@@ -64,55 +149,67 @@ export function openApiKeysModal() {
     <div class="api-keys-modal__dialog">
       <header class="api-keys-modal__header">
         <h2 id="api-keys-modal-title" class="api-keys-modal__title">🔑 Gestion des clés API</h2>
-        <button type="button" class="api-keys-modal__close" aria-label="Fermer">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18 6L6 18M6 6l12 12"/>
-          </svg>
-        </button>
+        <div class="api-keys-modal__header-actions">
+          <span class="api-keys-modal__rotation-badge" title="Rotation LRU automatique">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+            Rotation LRU
+          </span>
+          <button type="button" class="api-keys-modal__icon-btn" data-action="export-keys" title="Exporter les clés en JSON">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </button>
+          <button type="button" class="api-keys-modal__close" aria-label="Fermer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
       </header>
       <div class="api-keys-modal__body">
-        ${renderKeysList(keys)}
-        <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 5v14M5 12h14"/>
-          </svg>
-          Ajouter une clé API
-        </button>
+        ${keysHtml}
+        <div class="api-keys-modal__actions">
+          <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            Ajouter une clé API
+          </button>
+          ${renderEnvInfo()}
+        </div>
       </div>
     </div>
   `;
 
   document.body.appendChild(modalEl);
 
-  // Câble les événements
   modalEl.querySelector('.api-keys-modal__backdrop').addEventListener('click', closeModal);
   modalEl.querySelector('.api-keys-modal__close').addEventListener('click', closeModal);
   modalEl.addEventListener('click', handleModalClick);
   document.addEventListener('keydown', handleEscape);
 
-  // Focus trap
   requestAnimationFrame(() => {
     const firstFocusable = modalEl.querySelector('button, input, select');
     if (firstFocusable) firstFocusable.focus();
   });
 }
 
-/**
- * Ferme la modale.
- */
 function closeModal() {
   if (!modalEl) return;
   modalEl.classList.remove('is-open');
   modalEl.addEventListener('animationend', () => {
     modalEl?.remove();
     modalEl = null;
+    deactivateNavigationGuard();
   }, { once: true });
-  // Fallback si pas d'animation
   setTimeout(() => {
     if (modalEl) {
       modalEl.remove();
       modalEl = null;
     }
+    deactivateNavigationGuard();
   }, 300);
   document.removeEventListener('keydown', handleEscape);
 }
@@ -121,59 +218,106 @@ function handleEscape(e) {
   if (e.key === 'Escape') closeModal();
 }
 
-/**
- * Rendu de la liste des clés API.
- */
-function renderKeysList(keys) {
-  if (!keys || keys.length === 0) {
+// --- Render ---
+
+function renderEnvInfo() {
+  return `
+    <div class="api-keys-modal__env-info">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+      </svg>
+      Les clés sont stockées dans <code>.env</code>. Plusieurs clés = rotation LRU automatique.
+    </div>
+  `;
+}
+
+async function renderKeysList() {
+  // Charger les clés depuis le serveur
+  let envKeys = {};
+  try {
+    await loadEnvKeys();
+    envKeys = getCachedEnv() || {};
+  } catch (e) {
+    // Si le serveur n'est pas joignable, utiliser le cache local
+  }
+
+  const onlineProviders = getPresetsByCategory('online').filter(p => p.authRequired && p.envKey);
+  
+  // Pour chaque provider, récupérer toutes ses clés
+  const providerData = onlineProviders.map(p => {
+    const allKeys = getAllKeysForEnvKey(p.envKey);
+    return {
+      name: p.name,
+      providerId: p.id,
+      envKey: p.envKey,
+      keys: allKeys,
+      hasKeys: allKeys.length > 0,
+    };
+  }).filter(k => k.hasKeys);
+
+  if (providerData.length === 0) {
     return `
       <div class="api-keys-modal__empty">
         <div class="api-keys-modal__empty-icon">🔐</div>
         <div class="api-keys-modal__empty-text">Aucune clé API enregistrée.</div>
-        <div class="api-keys-modal__empty-hint">Ajoute une clé pour l'utiliser avec tes providers.</div>
+        <div class="api-keys-modal__empty-hint">Ajoute une clé pour l'utiliser avec tes providers. Plusieurs clés = rotation automatique.</div>
       </div>
     `;
   }
 
   return `
     <div class="api-keys-modal__list">
-      ${keys.map((key, index) => renderKeyItem(key, index)).join('')}
+      ${providerData.map(p => renderProviderItem(p)).join('')}
     </div>
   `;
 }
 
-/**
- * Rendu d'un élément de clé API.
- */
-function renderKeyItem(key, index) {
+function renderProviderItem(provider) {
+  const keyCount = provider.keys.length;
+  const countLabel = keyCount === 1 ? '1 clé' : `${keyCount} clés`;
+  
   return `
-    <div class="api-keys-modal__item" data-key-index="${index}">
-      <div class="api-keys-modal__item-header">
-        <span class="api-keys-modal__item-name">${escapeHtml(key.name || `Clé ${index + 1}`)}</span>
-        <span class="api-keys-modal__item-provider">${escapeHtml(getProviderName(key.providerId))}</span>
+    <div class="api-keys-modal__provider" data-env-key="${provider.envKey}">
+      <div class="api-keys-modal__provider-header">
+        <div class="api-keys-modal__provider-info">
+          <span class="api-keys-modal__provider-name">${escapeHtml(provider.name)}</span>
+          <span class="api-keys-modal__provider-key-name">${escapeHtml(provider.envKey)}</span>
+        </div>
+        <div class="api-keys-modal__provider-meta">
+          <span class="api-keys-modal__key-count" title="Rotation LRU">${countLabel}</span>
+          ${keyCount > 1 ? '<span class="api-keys-modal__rotation-indicator" title="Rotation activée">🔄</span>' : ''}
+          <button type="button" class="api-keys-modal__add-key-btn" data-action="add-key-for-provider" data-env-key="${provider.envKey}" title="Ajouter une autre clé">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+        </div>
       </div>
-      <div class="api-keys-modal__item-key">
-        <code>${escapeHtml(maskKey(key.value))}</code>
+      <div class="api-keys-modal__keys-list">
+        ${provider.keys.map((k, idx) => renderKeyItem(provider.envKey, k, idx)).join('')}
       </div>
-      <div class="api-keys-modal__item-actions">
-        <button type="button" class="api-keys-modal__action-btn" data-action="view-key" data-index="${index}" title="Voir">
+    </div>
+  `;
+}
+
+function renderKeyItem(baseEnvKey, keyInfo, displayIndex) {
+  const isBase = keyInfo.index === 0;
+  const suffixLabel = isBase ? '' : ` #${keyInfo.index}`;
+  const rotationClass = isBase ? '' : ' api-keys-modal__key-item--secondary';
+  
+  return `
+    <div class="api-keys-modal__key-item${rotationClass}" data-key="${keyInfo.key}" data-index="${keyInfo.index}">
+      <div class="api-keys-modal__key-badge">${isBase ? 'Base' : `#${keyInfo.index}`}</div>
+      <div class="api-keys-modal__key-value">
+        <code>${escapeHtml(maskKey(keyInfo.value))}</code>
+      </div>
+      <div class="api-keys-modal__key-actions">
+        <button type="button" class="api-keys-modal__action-btn" data-action="view-key" data-key="${keyInfo.key}" title="Voir la clé complète">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-            <circle cx="12" cy="12" r="3"/>
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
           </svg>
         </button>
-        <button type="button" class="api-keys-modal__action-btn" data-action="edit-key" data-index="${index}" title="Éditer">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-          </svg>
-        </button>
-        <button type="button" class="api-keys-modal__action-btn" data-action="use-key" data-index="${index}" title="Appliquer au provider actuel">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2v20M2 12h20"/>
-          </svg>
-        </button>
-        <button type="button" class="api-keys-modal__action-btn api-keys-modal__action-btn--danger" data-action="delete-key" data-index="${index}" title="Supprimer">
+        <button type="button" class="api-keys-modal__action-btn api-keys-modal__action-btn--danger" data-action="delete-key" data-key="${keyInfo.key}" title="Supprimer cette clé">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>
           </svg>
@@ -183,58 +327,90 @@ function renderKeyItem(key, index) {
   `;
 }
 
-/**
- * Gestion des clics dans la modale.
- */
+// --- Event handlers ---
+
 function handleModalClick(e) {
+  // Empêcher tout comportement par défaut (comme la soumission de formulaire)
+  e.preventDefault();
+  
   const actionEl = e.target.closest('[data-action]');
   if (!actionEl) return;
 
   const action = actionEl.dataset.action;
-  const index = parseInt(actionEl.dataset.index, 10);
+  const envKey = actionEl.dataset.envKey;
+  const key = actionEl.dataset.key;
 
   switch (action) {
     case 'add-key':
-      showAddKeyForm();
+      showAddKeyForm(null);
+      break;
+    case 'add-key-for-provider':
+      showAddKeyForm(envKey);
       break;
     case 'view-key':
-      viewKey(index);
-      break;
-    case 'edit-key':
-      showEditKeyForm(index);
+      viewKey(key);
       break;
     case 'delete-key':
-      deleteKey(index);
+      deleteKey(key);
       break;
     case 'save-key':
-      saveKey();
-      break;
+      saveKey(e);
+      return false;
     case 'cancel-form':
       refreshModal();
       break;
-    case 'use-key':
-      useKey(index);
+    case 'export-keys':
+      exportKeys();
+      break;
+    case 'copy-key':
+      copyKey(actionEl.dataset.keyValue);
       break;
   }
 }
 
-/**
- * Affiche le formulaire d'ajout de clé.
- */
-function showAddKeyForm() {
+function showAddKeyForm(preSelectedEnvKey) {
   const body = modalEl.querySelector('.api-keys-modal__body');
-  const onlineProviders = PROVIDER_PRESETS.filter((p) => p.authRequired);
+  const onlineProviders = getPresetsByCategory('online').filter(p => p.authRequired && p.envKey);
+
+  const selectedEnvKey = preSelectedEnvKey || onlineProviders[0]?.envKey || '';
+  
+  // Récupérer le nombre de clés existantes pour ce provider
+  const existingKeys = getAllKeysForEnvKey(selectedEnvKey);
+  const nextIndex = existingKeys.length; // Prochaine clé = _1, _2, etc.
+  const isAdditionalKey = existingKeys.length > 0;
+
+  // Construire le hint pour la clé additionnelle
+  let hintHtml = '';
+  if (isAdditionalKey) {
+    const suffix = nextIndex === 0 ? 1 : nextIndex;
+    const newKeyName = `${selectedEnvKey}_${suffix}`;
+    hintHtml = `
+      <div class="api-keys-modal__form-hint">
+        <span class="api-keys-modal__hint-icon">🔄</span>
+        Rotation LRU : cette clé sera la <strong>clé #${existingKeys.length + 1}</strong> pour ce provider.
+        <br/>Sera enregistrée comme <code>${newKeyName}</code>
+      </div>
+    `;
+  } else {
+    hintHtml = `
+      <div class="api-keys-modal__form-hint">
+        <span class="api-keys-modal__hint-icon">📝</span>
+        Première clé pour ce provider. Ajoute d'autres clés ensuite pour activer la rotation LRU.
+      </div>
+    `;
+  }
 
   body.innerHTML = `
     <div class="api-keys-modal__form">
-      <div class="api-keys-modal__field">
-        <label class="api-keys-modal__label" for="api-key-name">Nom</label>
-        <input type="text" class="api-keys-modal__input" id="api-key-name" placeholder="Ma clé OpenRouter" autocomplete="off" />
-      </div>
+      ${hintHtml}
       <div class="api-keys-modal__field">
         <label class="api-keys-modal__label" for="api-key-provider">Provider</label>
         <select class="api-keys-modal__select" id="api-key-provider">
-          ${onlineProviders.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+          ${onlineProviders.map((p) => {
+            const keyCount = getAllKeysForEnvKey(p.envKey).length;
+            const countLabel = keyCount > 0 ? ` (${keyCount} clé${keyCount > 1 ? 's' : ''})` : '';
+            return `<option value="${p.envKey}" ${p.envKey === selectedEnvKey ? 'selected' : ''}>${escapeHtml(p.name)}${countLabel}</option>`;
+          }).join('')}
         </select>
       </div>
       <div class="api-keys-modal__field">
@@ -243,195 +419,328 @@ function showAddKeyForm() {
       </div>
       <div class="api-keys-modal__form-actions">
         <button type="button" class="btn" data-action="cancel-form">Annuler</button>
-        <button type="button" class="btn btn--primary" data-action="save-key">Sauvegarder</button>
+        <button type="button" class="btn btn--primary" data-action="save-key">Sauvegarder dans .env</button>
       </div>
     </div>
   `;
+
+  // Listener pour mettre à jour le hint quand le provider change
+  const providerSelect = body.querySelector('#api-key-provider');
+  providerSelect.addEventListener('change', () => {
+    const newEnvKey = providerSelect.value;
+    const keys = getAllKeysForEnvKey(newEnvKey);
+    const nextIdx = keys.length;
+    const isAdditional = keys.length > 0;
+    const newKeyName = isAdditional ? `${newEnvKey}_${nextIdx === 0 ? 1 : nextIdx}` : newEnvKey;
+    
+    const hintEl = body.querySelector('.api-keys-modal__form-hint');
+    if (hintEl) {
+      if (isAdditional) {
+        hintEl.innerHTML = `
+          <span class="api-keys-modal__hint-icon">🔄</span>
+          Rotation LRU : cette clé sera la <strong>clé #${keys.length + 1}</strong> pour ce provider.
+          <br/>Sera enregistrée comme <code>${newKeyName}</code>
+        `;
+      } else {
+        hintEl.innerHTML = `
+          <span class="api-keys-modal__hint-icon">📝</span>
+          Première clé pour ce provider. Ajoute d'autres clés ensuite pour activer la rotation LRU.
+        `;
+      }
+    }
+  });
 }
 
-/**
- * Affiche le formulaire d'édition de clé.
- */
-function showEditKeyForm(index) {
-  const keys = getState().assistant?.apiKeys || [];
-  const key = keys[index];
-  if (!key) return;
-
+async function viewKey(key) {
   const body = modalEl.querySelector('.api-keys-modal__body');
-  const onlineProviders = PROVIDER_PRESETS.filter((p) => p.authRequired);
+  const envKeys = getCachedEnv() || {};
+  const value = envKeys[key] || '';
+
+  // Trouver le provider associé
+  const provider = getAllPresets().find(p => {
+    const keys = getAllKeysForEnvKey(p.envKey);
+    return keys.some(k => k.key === key);
+  });
 
   body.innerHTML = `
     <div class="api-keys-modal__form">
-      <input type="hidden" id="api-key-edit-index" value="${index}" />
-      <div class="api-keys-modal__field">
-        <label class="api-keys-modal__label" for="api-key-name">Nom</label>
-        <input type="text" class="api-keys-modal__input" id="api-key-name" value="${escapeHtml(key.name || '')}" autocomplete="off" />
-      </div>
-      <div class="api-keys-modal__field">
-        <label class="api-keys-modal__label" for="api-key-provider">Provider</label>
-        <select class="api-keys-modal__select" id="api-key-provider">
-          ${onlineProviders.map((p) => `<option value="${p.id}" ${p.id === key.providerId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="api-keys-modal__field">
-        <label class="api-keys-modal__label" for="api-key-value">Clé API</label>
-        <input type="password" class="api-keys-modal__input" id="api-key-value" value="${escapeHtml(key.value || '')}" autocomplete="off" />
-      </div>
-      <div class="api-keys-modal__form-actions">
-        <button type="button" class="btn" data-action="cancel-form">Annuler</button>
-        <button type="button" class="btn btn--primary" data-action="save-key">Mettre à jour</button>
-      </div>
-    </div>
-  `;
-}
-
-/**
- * Affiche la clé en clair (vue détaillée).
- */
-function viewKey(index) {
-  const keys = getState().assistant?.apiKeys || [];
-  const key = keys[index];
-  if (!key) return;
-
-  const body = modalEl.querySelector('.api-keys-modal__body');
-  body.innerHTML = `
-    <div class="api-keys-modal__form">
-      <div class="api-keys-modal__field">
-        <label class="api-keys-modal__label">Nom</label>
-        <div class="api-keys-modal__readonly">${escapeHtml(key.name || `Clé ${index + 1}`)}</div>
-      </div>
       <div class="api-keys-modal__field">
         <label class="api-keys-modal__label">Provider</label>
-        <div class="api-keys-modal__readonly">${escapeHtml(getProviderName(key.providerId))}</div>
+        <div class="api-keys-modal__readonly">${escapeHtml(provider?.name || 'Inconnu')}</div>
+      </div>
+      <div class="api-keys-modal__field">
+        <label class="api-keys-modal__label">Variable .env</label>
+        <div class="api-keys-modal__readonly"><code>${escapeHtml(key)}</code></div>
       </div>
       <div class="api-keys-modal__field">
         <label class="api-keys-modal__label">Clé API</label>
         <div class="api-keys-modal__readonly api-keys-modal__readonly--key">
-          <code>${escapeHtml(key.value)}</code>
-          <button type="button" class="api-keys-modal__copy-btn" data-key-value="${escapeHtml(key.value)}" title="Copier">
+          <code>${escapeHtml(value)}</code>
+          ${value ? `
+          <button type="button" class="api-keys-modal__copy-btn" data-action="copy-key" data-key-value="${escapeHtml(value)}" title="Copier">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2"/>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
             </svg>
           </button>
+          ` : ''}
         </div>
       </div>
       <div class="api-keys-modal__form-actions">
         <button type="button" class="btn" data-action="cancel-form">Retour</button>
-        <button type="button" class="btn" data-action="edit-key" data-index="${index}">Éditer</button>
       </div>
     </div>
   `;
-
-  // Copier la clé
-  const copyBtn = body.querySelector('.api-keys-modal__copy-btn');
-  if (copyBtn) {
-    copyBtn.addEventListener('click', () => {
-      navigator.clipboard.writeText(copyBtn.dataset.keyValue).then(() => {
-        toast.success('Clé copiée dans le presse-papier');
-      }).catch(() => {
-        toast.error('Impossible de copier la clé');
-      });
-    });
-  }
 }
 
-/**
- * Sauvegarde une clé (ajout ou édition).
- */
-function saveKey() {
-  const name = modalEl.querySelector('#api-key-name')?.value?.trim();
-  const providerId = modalEl.querySelector('#api-key-provider')?.value;
+function copyKey(value) {
+  navigator.clipboard.writeText(value).then(() => {
+    toast.success('Clé copiée dans le presse-papier');
+  }).catch(() => {
+    toast.error('Impossible de copier la clé');
+  });
+}
+
+async function saveKey(event) {
+  // Empêcher tout comportement par défaut
+  if (event) event.preventDefault();
+  
+  const envKey = modalEl.querySelector('#api-key-provider')?.value;
   const value = modalEl.querySelector('#api-key-value')?.value?.trim();
-  const editIndex = modalEl.querySelector('#api-key-edit-index')?.value;
 
   if (!value) {
     toast.warning('La valeur de la clé est requise');
     return;
   }
-  if (!providerId) {
+  if (!envKey) {
     toast.warning('Sélectionne un provider');
     return;
   }
 
-  const keys = [...(getState().assistant?.apiKeys || [])];
+  // Afficher un état de chargement pour indiquer le test en cours
+  const saveBtn = modalEl.querySelector('[data-action="save-key"]');
+  const originalText = saveBtn.textContent;
+  saveBtn.textContent = 'Test en cours...';
+  saveBtn.disabled = true;
 
-  if (editIndex !== undefined && editIndex !== '') {
-    // Édition
-    const idx = parseInt(editIndex, 10);
-    keys[idx] = { ...keys[idx], name: name || keys[idx].name, providerId, value };
-    actions.updateApiKey(idx, keys[idx]);
-    toast.success('Clé API mise à jour');
-  } else {
-    // Ajout
-    const newKey = { name: name || `Clé ${keys.length + 1}`, providerId, value };
-    actions.addApiKey(newKey);
-    toast.success('Clé API ajoutée');
+  try {
+    // Trouver le provider correspondant à cet envKey
+    const providerPreset = getAllPresets().find(p => p.envKey === envKey);
+    if (!providerPreset) {
+      toast.error('Provider non trouvé pour cet envKey');
+      return;
+    }
+
+    // Construire un provider temporaire pour tester la clé
+    const testProvider = {
+      id: providerPreset.id,
+      baseUrl: providerPreset.baseUrl || '',
+      model: validationModels.validationModels[providerPreset.id] ?? '',
+      apiKey: value,
+      envKey: envKey,
+      temperature: 0.7,
+      maxTokens: 128,
+    };
+
+    // Tester la clé avec un appel minimal
+    toast.info('Test de la clé API en cours...');
+    
+    let testPassed = false;
+    try {
+      await chatCompletion(testProvider, [
+        { role: 'user', content: 'Say "ok"' }
+      ], { maxRetries: 1 }); // 1 seul retry pour le test
+      testPassed = true;
+    } catch (testErr) {
+      testPassed = false;
+      throw testErr;
+    }
+
+    if (!testPassed) {
+      throw new Error('Test de clé échoué');
+    }
+
+    // La clé est valide - la sauvegarder dans .env
+    const existingKeys = getAllKeysForEnvKey(envKey);
+    
+    if (existingKeys.length === 0) {
+      // Première clé pour ce provider - utiliser setKey
+      await apiEnvSetKey(envKey, value);
+    } else {
+      // Clé additionnelle - utiliser addKey
+      await apiEnvAddKey(envKey, value);
+    }
+    
+    invalidateCache();
+    await loadEnvKeys();
+    toast.success(`✅ Clé API validée et sauvegardée !`);
+    
+    // Notifier le provider panel si le provider actif vient d'obtenir une clé
+    if (envKey) notifyProviderPanelOnKeyChange(envKey);
+    
+    refreshModal();
+  } catch (err) {
+    // Réactiver le bouton
+    saveBtn.textContent = originalText;
+    saveBtn.disabled = false;
+    
+    // Message d'erreur explicatif
+    const errorMsg = err.message || '';
+    if (errorMsg.includes('401') || errorMsg.includes('No cookie auth') || errorMsg.includes('Invalid API key')) {
+      toast.error(`❌ Clé API invalide ou expirée`);
+    } else if (errorMsg.includes('429') || errorMsg.includes('Rate limit')) {
+      toast.error(`⏳ Rate limit — la clé semble valide mais le provider limite les requêtes`);
+    } else if (errorMsg.includes('TIMEOUT') || errorMsg.includes('timeout')) {
+      toast.error(`⏱️ Timeout — le provider met trop de temps à répondre`);
+    } else {
+      toast.error(`❌ Erreur lors du test: ${err.message}`);
+    }
   }
-
-  refreshModal();
 }
 
-/**
- * Supprime une clé avec confirmation.
- */
-function deleteKey(index) {
-  const keys = getState().assistant?.apiKeys || [];
-  const key = keys[index];
-  if (!key) return;
-
+async function deleteKey(key) {
   const body = modalEl.querySelector('.api-keys-modal__body');
+  
+  // Vérifier si c'est la dernière clé du provider
+  const provider = getAllPresets().find(p => {
+    const keys = getAllKeysForEnvKey(p.envKey);
+    return keys.some(k => k.key === key);
+  });
+  
+  if (!provider) return;
+  
+  const allKeysForProvider = getAllKeysForEnvKey(provider.envKey);
+  const isLastKey = allKeysForProvider.length <= 1;
+
   body.innerHTML = `
     <div class="api-keys-modal__confirm">
       <div class="api-keys-modal__confirm-icon">⚠️</div>
       <div class="api-keys-modal__confirm-title">Supprimer cette clé ?</div>
       <div class="api-keys-modal__confirm-text">
-        La clé <strong>${escapeHtml(key.name || `Clé ${index + 1}`)}</strong> sera définitivement supprimée.
+        ${isLastKey 
+          ? `<strong>Attention :</strong> c'est la dernière clé pour <strong>${escapeHtml(provider.name)}</strong>. Sans clé, la rotation ne fonctionnera pas.` 
+          : `La clé <code>${escapeHtml(key)}</code> sera supprimée du fichier <code>.env</code>.`
+        }
       </div>
       <div class="api-keys-modal__confirm-actions">
         <button type="button" class="btn" data-action="cancel-form">Annuler</button>
-        <button type="button" class="btn btn--danger" data-action="confirm-delete" data-index="${index}">Supprimer</button>
+        <button type="button" class="btn btn--danger" data-action="confirm-delete" data-key="${key}">Supprimer</button>
       </div>
     </div>
   `;
 
-  // Re-câbler le confirm delete
-  body.querySelector('[data-action="confirm-delete"]')?.addEventListener('click', () => {
-    actions.removeApiKey(index);
-    toast.success('Clé API supprimée');
-    refreshModal();
+  body.querySelector('[data-action="confirm-delete"]')?.addEventListener('click', async () => {
+    try {
+      await apiEnvDeleteKey(key);
+      invalidateCache();
+      await loadEnvKeys();
+      toast.success('Clé API supprimée du .env');
+      
+      // Notifier le provider panel si le provider actif a perdu sa clé
+      notifyProviderPanelOnKeyChange(key);
+      
+      refreshModal();
+    } catch (err) {
+      toast.error(`Erreur: ${err.message}`);
+    }
   });
 }
 
-/**
- * Applique une clé API au provider actuel.
- */
-function useKey(index) {
-  const keys = getState().assistant?.apiKeys || [];
-  const key = keys[index];
-  if (!key) return;
-
-  actions.updateProvider({ apiKey: key.value });
-  toast.success(`Clé "${key.name || key.providerId}" appliquée au provider actuel`);
-  closeModal();
-}
-
-/**
- * Rafraîchit le contenu de la modale.
- */
-function refreshModal() {
+async function refreshModal() {
   if (!modalEl) return;
-  const keys = getState().assistant?.apiKeys || [];
   const body = modalEl.querySelector('.api-keys-modal__body');
   if (body) {
+    const keysHtml = await renderKeysList();
     body.innerHTML = `
-      ${renderKeysList(keys)}
-      <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 5v14M5 12h14"/>
-        </svg>
-        Ajouter une clé API
-      </button>
+      ${keysHtml}
+      <div class="api-keys-modal__actions">
+        <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          Ajouter une clé API
+        </button>
+        ${renderEnvInfo()}
+      </div>
     `;
   }
+}
+
+// --- Sync provider panel ---
+
+/**
+ * Après une modification de clé API, met à jour le cache providerConfigs
+ * et notifie le provider panel pour qu'il se re-renderise.
+ *
+ * Gère deux cas :
+ *   - Provider actif → actions.updateProvider() avec notification
+ *   - Provider non actif → modification directe de providerConfigs + persist
+ */
+function notifyProviderPanelOnKeyChange(key) {
+  // Trouver le provider concerné par cette clé
+  let affectedPreset = null;
+  for (const p of getAllPresets()) {
+    if (p.envKey && (key === p.envKey || key.startsWith(p.envKey + '_'))) {
+      affectedPreset = p;
+      break;
+    }
+  }
+  if (!affectedPreset || !affectedPreset.authRequired) return;
+
+  const remainingKeys = getAllKeysForEnvKey(affectedPreset.envKey);
+  const hasNoKeys = remainingKeys.length === 0;
+
+  const state = getState();
+  const currentProvider = state.assistant.provider;
+  const configs = state.assistant.providerConfigs || {};
+
+  if (currentProvider?.id === affectedPreset.id) {
+    // Provider actif → via updateProvider (gère notification + configs)
+    if (hasNoKeys) {
+      actions.updateProvider({ isConnected: false, lastTestedAt: null });
+    } else {
+      actions.updateProvider({});
+    }
+  } else {
+    // Provider non actif → modifier providerConfigs directement
+    if (configs[affectedPreset.id]) {
+      if (hasNoKeys) {
+        configs[affectedPreset.id].isConnected = false;
+        configs[affectedPreset.id].lastTestedAt = null;
+      }
+      // Déclencher une notification pour que les abonnés (chat bar, etc.) se mettent à jour
+      // On utilise notify via un updateProvider sur le current (no-op) pour ne pas
+      // dupliquer la logique de notification
+      actions.updateProvider({});
+    }
+  }
+}
+
+// --- Export JSON (liste des providers avec statut de clé) ---
+
+function exportKeys() {
+  const onlineProviders = getPresetsByCategory('online').filter(p => p.authRequired && p.envKey);
+  const exportData = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    providers: onlineProviders.map(p => {
+      const keys = getAllKeysForEnvKey(p.envKey);
+      return {
+        id: p.id,
+        name: p.name,
+        envKey: p.envKey,
+        keyCount: keys.length,
+        hasKeys: keys.length > 0,
+      };
+    }),
+    note: 'Les clés API sont dans le fichier .env. Cette liste indique quels providers ont une clé configurée.',
+  };
+
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `code-city-providers-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast.success('Liste des providers exportée');
 }

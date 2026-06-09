@@ -12,8 +12,12 @@
  * phase 9 (Polish) et la persistance localStorage y sera ajoutée.
  */
 
-import { testConnection } from './ai/aiClient.js';
+
 import { MAX_HISTORY_MESSAGES } from './ai/chatHistory.js';
+import { getPreset } from './ai/providerLoader.js';
+import { hasApiKey } from './ai/envLoader.js';
+import { getProviderConfig, getActiveProvider, setActiveProvider, listSavedProviders } from './ai/providerStore.js';
+import validationModels from './data/validation-models.json';
 
 const HISTORY_MAX_SIZE = 50;
 
@@ -53,12 +57,10 @@ const initialState = () => ({
   },
 
   // Assistant IA — configuration du provider + historique chat + clés API
-  assistant: readStoredAssistant() || {
+  assistant: {
     provider: { ...DEFAULT_PROVIDER },
-    providers: {
-      custom: [],
-    },
-    apiKeys: [],
+    providers: { custom: [] },
+    providerConfigs: {},
     chatHistory: [],
   },
 });
@@ -74,38 +76,138 @@ function readStoredTheme() {
   return 'light';
 }
 
-const ASSISTANT_STORAGE_KEY = 'code-city-assistant';
 const DEFAULT_PROVIDER = {
   id: 'ollama',
-  apiKey: '',
   baseUrl: 'http://localhost:11434/v1',
-  model: 'llama3.2',
+  model: '',
   temperature: 0.7,
   maxTokens: 4096,
   isConnected: false,
   lastTestedAt: null,
+  modelMeta: null, // { format, capabilities, contextWindow } — temporaire, exclu de la sérialisation
 };
 
-function readStoredAssistant() {
-  try {
-    const raw = localStorage.getItem(ASSISTANT_STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (data && typeof data === 'object' && data.provider) {
-      // Migration : l'ancien provider 'mistral' (codestral.mistral.ai) est
-      // désormais splité en 'mistral' (api.mistral.ai) et 'codestral' (codestral.mistral.ai).
-      // Si l'utilisateur avait 'mistral' avec baseUrl codestral, on migre vers 'codestral'.
-      if (data.provider.id === 'mistral' && data.provider.baseUrl?.includes('codestral.mistral.ai')) {
-        data.provider.id = 'codestral';
+/**
+ * Charge l'historique chat depuis le fichier JSON via /api/state
+ */
+let _cachedChatHistory = null;
+let _chatLoadPromise = null;
+
+async function loadChatHistory() {
+  if (_cachedChatHistory !== null) return _cachedChatHistory;
+  if (_chatLoadPromise) return _chatLoadPromise;
+
+  _chatLoadPromise = (async () => {
+    try {
+      const resp = await fetch('/api/state');
+      if (resp.ok) {
+        const parsed = await resp.json();
+        _cachedChatHistory = Array.isArray(parsed.chatHistory) ? parsed.chatHistory : [];
+        return _cachedChatHistory;
       }
-      // S'assurer que apiKeys existe (backward compat pour anciens stockages)
-      if (!Array.isArray(data.apiKeys)) {
-        data.apiKeys = [];
+    } catch (_) {}
+    return [];
+  })();
+
+  return _chatLoadPromise;
+}
+
+/**
+ * Initialise l'assistant au démarrage de l'application.
+ * Nouvelle architecture :
+ * - Chat history depuis /api/state
+ * - Provider actif depuis /api/active-provider
+ * - Config provider depuis /api/providers/{id}
+ */
+export async function initAssistant() {
+  // 1. Charger l'historique chat
+  const chatHistory = await loadChatHistory();
+  if (chatHistory.length > 0) {
+    state.assistant.chatHistory = chatHistory;
+  }
+
+  // 2. Restaurer le provider actif
+  const activeId = await getActiveProvider();
+  const providerId = activeId || DEFAULT_PROVIDER.id;
+
+  // 3. Charger la config sauvegardée de ce provider
+  const savedConfig = await getProviderConfig(providerId);
+  const preset = getPreset(providerId);
+
+  if (preset) {
+    state.assistant.provider = {
+      id: preset.id,
+      baseUrl: preset.baseUrl || '',
+      model: savedConfig?.model || (validationModels.validationModels[preset.id] ?? ''),
+      temperature: savedConfig?.temperature ?? 0.7,
+      maxTokens: savedConfig?.maxTokens ?? 4096,
+      isConnected: savedConfig?.isConnected || false,
+      lastTestedAt: savedConfig?.lastTestedAt || null,
+      envKey: preset.envKey || null,
+    };
+
+    // Mettre en cache in-memory
+    const { modelMeta: _, ...current } = state.assistant.provider;
+    state.assistant.providerConfigs[preset.id] = current;
+  }
+
+  // 4. Pré-charger tous les providers sauvegardés dans le cache
+  //    Pour que setProvider() retrouve leur config en changeant de provider
+  const savedProviders = await listSavedProviders();
+  for (const pid of savedProviders) {
+    if (pid !== providerId && !state.assistant.providerConfigs[pid]) {
+      const cfg = await getProviderConfig(pid);
+      if (cfg && Object.keys(cfg).length > 0) {
+        state.assistant.providerConfigs[pid] = cfg;
       }
-      return data;
     }
-  } catch (_) {}
-  return null;
+  }
+
+  // 5. Validation : réinitialiser les providers qui ont perdu leur clé API
+  validateProviderConfigsOnInit();
+}
+
+/**
+ * Parcourt tous les providers en cache (providerConfigs) et réinitialise
+ * ceux qui nécessitent une clé API mais n'en ont plus dans le .env.
+ * Les providers locaux (authRequired=false) ne sont pas concernés.
+ */
+function validateProviderConfigsOnInit() {
+  const configs = state.assistant.providerConfigs;
+  if (!configs || Object.keys(configs).length === 0) return;
+
+  let changed = false;
+
+  for (const [providerId, config] of Object.entries(configs)) {
+    // Chercher le preset correspondant
+    const preset = getPreset(providerId);
+    if (!preset) continue;
+
+    // Seuls les providers nécessitant une clé API sont concernés
+    if (!preset.authRequired || !preset.envKey) continue;
+
+    // Si le state dit "connecté" mais qu'aucune clé n'existe dans .env
+    if (config.isConnected && !hasApiKey(preset)) {
+      config.isConnected = false;
+      config.lastTestedAt = null;
+      config.model = '';
+      config.modelMeta = undefined;
+      changed = true;
+    }
+  }
+
+  // Si le provider actif est concerné, le mettre à jour aussi
+  const current = state.assistant.provider;
+  if (current?.id && configs[current.id]?.isConnected === false && current.isConnected) {
+    current.isConnected = false;
+    current.lastTestedAt = null;
+    current.model = '';
+    changed = true;
+  }
+
+  if (changed) {
+    notify({ type: 'assistant:provider', provider: state.assistant.provider });
+  }
 }
 
 const state = initialState();
@@ -219,56 +321,31 @@ function recomputeStatus() {
 /**
  * Recherche un preset par ID dans les presets intégrés ET les custom.
  */
-function findPreset(id) {
-  // On importe PROVIDER_PRESETS de façon lazy pour éviter les deps circulaires
-  // au chargement. En pratique, les presets sont disponibles via une closure.
-  return _presets.get(id) || state.assistant.providers.custom.find((p) => p.id === id) || null;
-}
+
 
 /**
- * Retourne la catégorie d'un preset ('online' | 'local').
+ * Persiste UNIQUEMENT l'historique chat via /api/state.
+ * Les configs provider sont dans des fichiers individuels (data/providers/{id}.json)
+ * via le bouton "💾 Enregistrer" dans le panneau.
  */
-function getPresetCategory(id) {
-  const preset = findPreset(id);
-  if (!preset) return 'online';
-  return preset.category;
-}
-
-/**
- * Cache des presets importés depuis providerPresets.js.
- * Peuplé une fois au démarrage via registerPresets().
- */
-const _presets = new Map();
-
-/**
- * Enregistre les presets de providers (appelé au démarrage).
- * @param {Array} presetList - Tableau PROVIDER_PRESETS
- */
-export function registerPresets(presetList) {
-  _presets.clear();
-  for (const p of presetList) {
-    _presets.set(p.id, p);
-  }
-}
-
-/**
- * Persiste la section assistant dans localStorage.
- */
-function persistAssistant() {
+async function persistChatHistory() {
   try {
-    const data = {
-      provider: { ...state.assistant.provider },
-      providers: {
-        custom: [...state.assistant.providers.custom],
-      },
-      apiKeys: [...(state.assistant.apiKeys || [])],
-      chatHistory: [...(state.assistant.chatHistory || [])],
+    const toSave = {
+      chatHistory: state.assistant.chatHistory,
     };
-    localStorage.setItem(ASSISTANT_STORAGE_KEY, JSON.stringify(data));
+    // keepalive: true permet d'envoyer la requête même si la page se décharge
+    await fetch('/api/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toSave),
+      keepalive: true,
+    });
   } catch (_) {
-    /* noop — quota or private browsing */
+    // Erreurs silencieuses
   }
 }
+
+
 
 /* --------------------------------------------------------------------------
  * Actions : graphe
@@ -677,35 +754,73 @@ n   */
   /* ----- assistant / providers ----- */
 
   /**
-   * Sélectionne un provider (préset ou custom) et réinitialise
-   * la configuration avec les valeurs par défaut du preset.
+   * Sélectionne un provider et réinitialise la config.
+   * Les clés API viennent de envLoader (via .env), pas du state.
    */
   setProvider(presetOrId) {
     const preset = typeof presetOrId === 'string'
-      ? findPreset(presetOrId)
+      ? getPreset(presetOrId)
       : presetOrId;
     if (!preset) return;
 
-    state.assistant.provider = {
-      id: preset.id,
-      apiKey: state.assistant.provider?.id === preset.id ? (state.assistant.provider.apiKey || '') : '',
-      baseUrl: preset.baseUrl || '',
-      model: preset.defaultModel || '',
-      temperature: 0.7,
-      maxTokens: 4096,
-      isConnected: false,
-      lastTestedAt: null,
-    };
-    persistAssistant();
+    const prev = state.assistant.provider;
+    const configs = state.assistant.providerConfigs || {};
+
+    // Sauvegarder la config du provider précédent (sans modelMeta éphémère)
+    if (prev?.id) {
+      const { modelMeta: _, ...saved } = prev;
+      configs[prev.id] = saved;
+    }
+
+    // Restaurer la config du provider cible (depuis configs ou preset)
+    const cached = configs[preset.id];
+    // Pour les presets personnalisés (objets), defaultModel peut être défini
+    const presetDefaultModel = preset.defaultModel || (validationModels.validationModels[preset.id] ?? '');
+    state.assistant.provider = cached
+      ? {
+          id: preset.id,
+          baseUrl: preset.baseUrl || cached.baseUrl || '',
+          model: cached.model || presetDefaultModel,
+          temperature: cached.temperature ?? 0.7,
+          maxTokens: cached.maxTokens ?? 4096,
+          isConnected: cached.isConnected || false,
+          lastTestedAt: cached.lastTestedAt || null,
+          envKey: preset.envKey || null,
+        }
+      : {
+          id: preset.id,
+          baseUrl: preset.baseUrl || '',
+          model: presetDefaultModel,
+          temperature: 0.7,
+          maxTokens: 4096,
+          isConnected: false,
+          lastTestedAt: null,
+          envKey: preset.envKey || null,
+        };
+
+    state.assistant.providerConfigs = configs;
+
+    // Persister UNIQUEMENT l'ID du provider actif (pas la config complète)
+    setActiveProvider(state.assistant.provider.id).catch(() => {});
     notify({ type: 'assistant:provider', provider: state.assistant.provider });
   },
 
   /**
-   * Met à jour un champ du provider courant (apiKey, model, temperature…).
+   * Met à jour un champ du provider courant (model, temperature…).
+   * Les modifications restent en mémoire uniquement.
+   * Seul le bouton "💾 Enregistrer" écrit sur le disque.
+   * Les clés API sont dans le .env via envLoader — pas dans le state.
    */
   updateProvider(patch) {
     Object.assign(state.assistant.provider, patch);
-    persistAssistant();
+    // Synchroniser le cache in-memory seulement
+    const id = state.assistant.provider?.id;
+    if (id) {
+      const configs = state.assistant.providerConfigs || {};
+      const { modelMeta: _, ...saved } = state.assistant.provider;
+      configs[id] = saved;
+      state.assistant.providerConfigs = configs;
+    }
     notify({ type: 'assistant:provider', provider: state.assistant.provider });
   },
 
@@ -724,7 +839,7 @@ n   */
       category: provider.category || 'online',
       baseUrl: provider.baseUrl || '',
       authRequired: provider.authRequired !== false,
-      defaultModel: provider.defaultModel || '',
+      defaultModel: provider.defaultModel || (validationModels.validationModels[provider.id] ?? ''),
       models: provider.models || [],
       icon: provider.icon || 'plug',
       description: provider.description || '',
@@ -745,7 +860,6 @@ n   */
     if (state.assistant.provider.id === id) {
       actions.setProvider('ollama');
     }
-    persistAssistant();
     notify({ type: 'assistant:custom-provider-removed', id });
   },
 
@@ -754,53 +868,6 @@ n   */
    */
   resetProvider() {
     actions.setProvider({ ...DEFAULT_PROVIDER });
-  },
-
-  /* ----- API keys ----- */
-
-  /**
-   * Ajoute une clé API.
-   * @param {Object} apiKey - { name, providerId, value }
-   */
-  addApiKey(apiKey) {
-    if (!apiKey || !apiKey.value) return;
-    const key = {
-      name: apiKey.name || `Clé ${(state.assistant.apiKeys || []).length + 1}`,
-      providerId: apiKey.providerId || '',
-      value: apiKey.value,
-      createdAt: Date.now(),
-    };
-    if (!Array.isArray(state.assistant.apiKeys)) {
-      state.assistant.apiKeys = [];
-    }
-    state.assistant.apiKeys.push(key);
-    persistAssistant();
-    notify({ type: 'assistant:api-key-added', apiKey: key });
-  },
-
-  /**
-   * Met à jour une clé API par index.
-   * @param {number} index
-   * @param {Object} patch - { name?, providerId?, value? }
-   */
-  updateApiKey(index, patch) {
-    const keys = state.assistant.apiKeys;
-    if (!Array.isArray(keys) || index < 0 || index >= keys.length) return;
-    Object.assign(keys[index], patch);
-    persistAssistant();
-    notify({ type: 'assistant:api-key-updated', apiKey: keys[index] });
-  },
-
-  /**
-   * Supprime une clé API par index.
-   * @param {number} index
-   */
-  removeApiKey(index) {
-    const keys = state.assistant.apiKeys;
-    if (!Array.isArray(keys) || index < 0 || index >= keys.length) return;
-    keys.splice(index, 1);
-    persistAssistant();
-    notify({ type: 'assistant:api-key-removed', index });
   },
 
   /* ----- chat history ----- */
@@ -825,7 +892,7 @@ n   */
     if (state.assistant.chatHistory.length > MAX_HISTORY_MESSAGES) {
       state.assistant.chatHistory = state.assistant.chatHistory.slice(-MAX_HISTORY_MESSAGES);
     }
-    persistAssistant();
+    persistChatHistory();
     notify({ type: 'assistant:chat-message', message: chatMessage });
   },
 
@@ -834,29 +901,31 @@ n   */
    */
   clearChatHistory() {
     state.assistant.chatHistory = [];
-    persistAssistant();
+    persistChatHistory();
     notify({ type: 'assistant:chat-cleared' });
   },
 
   /**
-   * Teste la connexion au provider courant.
-   * @returns {Promise<{ ok: boolean, latency: number, error?: string }>}
+   * Supprime le dernier message de l'historique si son rôle correspond.
+   * Utilisé par la régénération (évite clear + re-add qui perd l'historique
+   * si le processus échoue entre les deux).
+   * @param {string} [role] - Rôle attendu ('user'|'assistant'). Si fourni, ne supprime que si le rôle correspond.
+   * @returns {Object|null} Le message supprimé, ou null si rien n'a été supprimé.
    */
-  async testProviderConnection() {
-    const provider = state.assistant.provider;
-    if (!provider || !provider.id) {
-      return { ok: false, latency: 0, error: 'Aucun provider configuré' };
-    }
-    const result = await testConnection({
-      ...provider,
-      category: getPresetCategory(provider.id),
-    });
-    state.assistant.provider.isConnected = result.ok;
-    state.assistant.provider.lastTestedAt = Date.now();
-    persistAssistant();
-    notify({ type: 'assistant:provider-tested', result });
-    return result;
+  popLastChatMessage(role) {
+    const history = state.assistant.chatHistory;
+    if (!Array.isArray(history) || history.length === 0) return null;
+
+    const lastMsg = history[history.length - 1];
+    if (role && lastMsg.role !== role) return null;
+
+    const removed = history.pop();
+    persistChatHistory();
+    notify({ type: 'assistant:chat-message-removed', message: removed });
+    return removed;
   },
+
+
 
   /* ----- historique ----- */
 

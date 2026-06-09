@@ -1,0 +1,12 @@
+{
+  "validationModels": {
+    "openrouter": "meta-llama/llama-3.2-3b-instruct:free",
+    "gemini": "gemini-2.5-flash",
+    "kilo": "kilo-auto/free",
+    "opencode-zen": "mimo-v2.5-free",
+    "mistral": "mistral-small-latest",
+    "groq": "llama-3.1-8b-instant",
+    "ollama": "",
+    "lmstudio": ""
+  }
+}

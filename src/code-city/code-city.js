@@ -36,10 +36,11 @@ import { initializeTheme } from './quartierTop/menuActionsTop/themeClairSombreAc
 import { initializeHistoryCanvasCenter } from './quartierCenter/structureCanvasCenter/historyCanvasCenter.js';
 import { installKeyboardShortcuts } from './keyboard.js';
 import { restoreFromStorage, startAutoSave } from './persistence.js';
-import { registerPresets } from './state.js';
-import { PROVIDER_PRESETS } from './ai/providerPresets.js';
+import { loadEnvKeys } from './ai/envLoader.js';
+import { validateStoredProvider } from './ai/providerLoader.js';
 import { initializeProviderPanel } from './ai/providerPanel.js';
 import { initializeChatPanel } from './ai/chatPanel.js';
+import { initAssistant } from './state.js';
 
 export async function initializeApp() {
     console.log('🏙️ Initialisation de Code City...');
@@ -49,8 +50,14 @@ export async function initializeApp() {
         createBaseStructure();
         initializeTheme();
 
-        // 1b) Enregistrer les presets de providers IA
-        registerPresets(PROVIDER_PRESETS);
+        // 1b) Charger les clés API depuis le serveur env (/.env)
+        await loadEnvKeys();
+
+        // 1c) Charger la config assistant depuis le fichier JSON
+        await initAssistant();
+
+        // 1d) Valider le provider stocké (depuis JSON maintenant)
+        validateStoredProvider();
 
         // 2) Boutons undo/redo + raccourcis clavier
         initializeHistoryCanvasCenter();
@@ -279,16 +286,16 @@ function createBaseStructure() {
                 <div class="app__chat-backdrop" id="app-chat-backdrop"></div>
                 <aside class="app__chat-panel" role="dialog" aria-labelledby="app-chat-title">
                     <header class="app__chat-header">
-                        <div class="app__chat-header-left">
-                            <span class="app__chat-header-avatar">💬</span>
-                            <div>
-                                <h2 id="app-chat-title" class="app__chat-title">Assistant Mina</h2>
-                                <select class="app__chat-model-select" id="app-chat-model-select" title="Sélectionner un modèle">
-                                    <option value="">Chargement…</option>
-                                </select>
+                        <div class="app__chat-header-center">
+                            <div class="app__chat-provider-bar" id="app-chat-provider-bar">
+                            <!-- Rempli dynamiquement par chatPanel.js -->
+                            </div>
+                            <h2 id="app-chat-title" class="app__chat-title">Mina</h2>
+                            <div class="app__chat-header-banner-wrap">
+                                <img class="app__chat-header-img" src="assets/mina-banniere.jpg" alt="Mina" />
                             </div>
                         </div>
-                        <div class="app__chat-header-actions">
+                        <div class="app__chat-header-right">
                             <button type="button" class="app__chat-clear" id="app-chat-clear" title="Vider le chat" aria-label="Vider l'historique du chat">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>

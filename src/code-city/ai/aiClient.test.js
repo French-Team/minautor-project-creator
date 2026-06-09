@@ -40,9 +40,9 @@ describe('buildEndpointUrl', () => {
     expect(url).toBe('https://api.mistral.ai/v1/chat/completions');
   });
 
-  it('génère la bonne URL pour Codestral', () => {
-    const url = buildEndpointUrl({ id: 'codestral', baseUrl: 'https://codestral.mistral.ai/v1', model: 'codestral-latest' });
-    expect(url).toBe('https://codestral.mistral.ai/v1/chat/completions');
+  it('génère la bonne URL pour Mistral avec modèle codestral', () => {
+    const url = buildEndpointUrl({ id: 'mistral', baseUrl: 'https://api.mistral.ai/v1', model: 'codestral-latest' });
+    expect(url).toBe('https://api.mistral.ai/v1/chat/completions');
   });
 
   it('génère l\'URL REST native pour Gemini', () => {
@@ -203,7 +203,7 @@ describe('chatCompletion', () => {
 // --- fimCompletion ---
 
 describe('fimCompletion', () => {
-  it('envoie prefix+suffix au format Codestral FIM', async () => {
+  it('envoie prefix+suffix au format Mistral FIM', async () => {
     const mockResponse = {
       choices: [{ message: { content: 'a + b' } }],
       usage: { prompt_tokens: 30, completion_tokens: 5 },
@@ -215,8 +215,8 @@ describe('fimCompletion', () => {
     });
 
     const provider = {
-      id: 'codestral',
-      baseUrl: 'https://codestral.mistral.ai/v1',
+      id: 'mistral',
+      baseUrl: 'https://api.mistral.ai/v1',
       apiKey: 'test-key',
       model: 'codestral-latest',
       temperature: 0.2,
@@ -226,7 +226,7 @@ describe('fimCompletion', () => {
     const result = await fimCompletion(provider, 'def add(a, b):\n    return ', '\n\nprint(add(2, 3))');
 
     expect(global.fetch).toHaveBeenCalledWith(
-      'https://codestral.mistral.ai/v1/fim/completions',
+      'https://api.mistral.ai/v1/fim/completions',
       expect.objectContaining({ method: 'POST' })
     );
 
@@ -237,20 +237,12 @@ describe('fimCompletion', () => {
     expect(result.content).toBe('a + b');
   });
 
-  it('rejette les providers non-Codestral', async () => {
-    const provider = { id: 'mistral', baseUrl: 'https://api.mistral.ai/v1' };
-
-    await expect(
-      fimCompletion(provider, 'prefix', 'suffix')
-    ).rejects.toThrow('FIM n\'est supporté que par Codestral');
-  });
-
   it('rejette les providers non-Mistral (ex: OpenRouter)', async () => {
     const provider = { id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' };
 
     await expect(
       fimCompletion(provider, 'prefix', 'suffix')
-    ).rejects.toThrow('FIM n\'est supporté que par Codestral');
+    ).rejects.toThrow('FIM n\'est supporté que par Mistral');
   });
 });
 
