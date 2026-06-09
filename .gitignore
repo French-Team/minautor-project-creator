@@ -10,6 +10,11 @@ test-results/
 playwright-report/
 .private/
 
+# Secrets (API keys, etc.)
+.env
+.env.local
+.env.*.local
+
 # Runtime state (provider config, chat history)
 minautor-state.json
 
