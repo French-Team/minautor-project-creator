@@ -22,7 +22,15 @@ async function clearState(page) {
 }
 
 async function openChat(page) {
+  // Click sur le body pour garantir le focus avant Ctrl+Shift+A
+  await page.locator('body').click({ position: { x: 10, y: 10 } });
   await page.keyboard.press('Control+Shift+a');
+  // Attendre que le panneau soit réellement ouvert (au lieu d'un timeout fixe)
+  await page.waitForFunction(
+    () => document.getElementById('app-chat')?.classList.contains('is-open') ?? false,
+    { timeout: 2000 },
+  );
+  // 500ms supplémentaires pour laisser la transition slide-in (220ms) se terminer
   await page.waitForTimeout(500);
 }
 

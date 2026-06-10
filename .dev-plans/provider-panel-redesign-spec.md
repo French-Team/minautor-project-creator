@@ -2,6 +2,17 @@
 
 **Date** : 2026-06-06
 **Statut** : En attente d'implémentation
+**Statut d'implémentation** (mis à jour : juin 2026) : ✅ **Implémenté** — toutes les zones et étapes du workflow sont en production
+>
+> - `src/code-city/ai/providerPanel.js` ✅ refondu en 3 zones (status sticky / grille 2 colonnes / workflow 6 étapes)
+> - `src/code-city/ai/workflowRunner.js` ✅ créé (étapes 0–7, `startWorkflow`, `cancelWorkflow`, `testApiKey`, `selectModel`, `getDisplayModels`)
+> - `src/code-city/ai/keyRotation.js` ✅ créé (LRU rate-limit, `getNextKey`, `markRateLimited`, `trackError`, `getKeyStatuses`)
+> - Barre de progression 6 étapes (URL → Clé → Modèles → Sélection → Test → OK) ✅
+> - Détection 429 + rotation multi-clés + fallback « toutes clés rate-limitées » ✅
+> - Tri Top 15 modèles : gratuit > context window DESC > alphabétique ✅
+> - Le **Statut original** « En attente d'implémentation » est obsolète — la spec est implémentée
+> - **Drift mineur** : la spec parlait de `apiKeys[]` dans le state (refactor abandonnait cette approche) ; le code utilise `providerConfigs` cache en mémoire
+> - Pour le code exact à appliquer, voir [`provider-panel-implementation-guide.md`](provider-panel-implementation-guide.md) (également implémenté)
 **Priorité** : Haute
 **Version** : 1.4 (post cross-review — incohérences spec/guide résolues)
 

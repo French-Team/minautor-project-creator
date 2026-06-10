@@ -213,6 +213,90 @@ describe('state — persistance', () => {
     expect(state.assistant.provider.id).toBe('groq');
     expect(state.assistant.provider.model).toBe('llama-3.1-8b-instant'); // defaultModel du preset groq
   });
+});
+
+describe('state — actions.popLastChatMessagesFromIndex', () => {
+  beforeEach(() => {
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    actions.setProvider('ollama');
+    // Reset le chatHistory à un état connu
+    getState().assistant.chatHistory.length = 0;
+    getState().assistant.chatHistory.push(
+      { role: 'user', content: 'msg1', timestamp: 1000 },
+      { role: 'assistant', content: 'rep1', timestamp: 1100 },
+      { role: 'user', content: 'msg2', timestamp: 2000 },
+      { role: 'assistant', content: 'rep2', timestamp: 2100 },
+      { role: 'user', content: 'msg3', timestamp: 3000 },
+    );
+    fetchMock.mockClear();
+  });
+
+  it('tronque à partir d un index du milieu (cascade)', () => {
+    const removed = actions.popLastChatMessagesFromIndex(2);
+    expect(removed).toHaveLength(3);
+    expect(removed[0].content).toBe('msg2');
+    expect(removed[2].content).toBe('msg3');
+    expect(getState().assistant.chatHistory).toHaveLength(2);
+    expect(getState().assistant.chatHistory[0].content).toBe('msg1');
+    expect(getState().assistant.chatHistory[1].content).toBe('rep1');
+  });
+
+  it('tronque depuis l index 0 (vide tout l historique)', () => {
+    const removed = actions.popLastChatMessagesFromIndex(0);
+    expect(removed).toHaveLength(5);
+    expect(getState().assistant.chatHistory).toHaveLength(0);
+  });
+
+  it('tronque au dernier index (ne supprime que ce message)', () => {
+    const removed = actions.popLastChatMessagesFromIndex(4);
+    expect(removed).toHaveLength(1);
+    expect(removed[0].content).toBe('msg3');
+    expect(getState().assistant.chatHistory).toHaveLength(4);
+  });
+
+  it('retourne un tableau vide pour un index négatif (out of bounds)', () => {
+    const removed = actions.popLastChatMessagesFromIndex(-1);
+    expect(removed).toEqual([]);
+    expect(getState().assistant.chatHistory).toHaveLength(5);
+  });
+
+  it('retourne un tableau vide pour un index >= longueur (out of bounds)', () => {
+    const removed = actions.popLastChatMessagesFromIndex(5);
+    expect(removed).toEqual([]);
+    expect(getState().assistant.chatHistory).toHaveLength(5);
+
+    const removed2 = actions.popLastChatMessagesFromIndex(100);
+    expect(removed2).toEqual([]);
+    expect(getState().assistant.chatHistory).toHaveLength(5);
+  });
+
+  it('retourne un tableau vide pour un historique vide', () => {
+    getState().assistant.chatHistory.length = 0;
+    const removed = actions.popLastChatMessagesFromIndex(0);
+    expect(removed).toEqual([]);
+  });
+
+  it('persiste via /api/state (chat seulement)', () => {
+    actions.popLastChatMessagesFromIndex(2);
+    expect(fetchMock).toHaveBeenCalledWith('/api/state', expect.objectContaining({
+      method: 'POST',
+    }));
+    const lastCall = fetchMock.mock.calls.at(-1);
+    const body = JSON.parse(lastCall[1].body);
+    expect(body.chatHistory).toBeDefined();
+    expect(body.chatHistory).toHaveLength(2);
+  });
+});
+
+describe('state — persistance chat (pushChatMessage)', () => {
+  beforeEach(() => {
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    actions.setProvider('ollama');
+    fetchMock.mockClear();
+    getState().assistant.chatHistory.length = 0;
+  });
 
   it('pushChatMessage persist via /api/state (chat seulement)', () => {
     actions.pushChatMessage({

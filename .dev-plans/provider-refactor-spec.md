@@ -2,6 +2,23 @@
 
 > **Date :** 7 juin 2026
 > **Statut :** ✅ Validé (v2 — 12 corrections de review intégrées)
+> **Statut d'implémentation** (mis à jour : juin 2026) : ✅ **Implémenté** — cette spec a été appliquée intégralement
+>
+> - `src/code-city/data/provider-configs.json` ✅ créé (8 providers, source unique de vérité)
+> - `src/code-city/data/providers-grid.json` ✅ créé (layout grille)
+> - `src/code-city/ai/providerLoader.js` ✅ créé (`getPreset`, `getCategory`, `getAllPresets`, `getPresetsByCategory`, `getGridSections`, `validateStoredProvider`)
+> - `src/code-city/ai/envLoader.js` ✅ créé (`loadEnvKeys`, `getApiKeyForEnvKey`, `getNextApiKey`, `resetRotationIndex`, `hasApiKey`, `getAllKeysForEnvKey`, multi-clés LRU)
+> - `src/code-city/ai/providerStore.js` ✅ créé (CRUD `/api/providers/{id}`, `/api/active-provider`)
+> - `scripts/env-server.mjs` ✅ créé (serveur `/.env` → `GET /api/env`)
+> - `vite.config.js` ✅ mis à jour (proxy `/api/env`)
+> - `package.json` ✅ `concurrently` pour `dev` (env server + Vite)
+> - `src/code-city/ai/providerPresets.js` ✅ **supprimé** (config dans JSON maintenant)
+> - `src/code-city/ai/apiKeysModal.js` ✅ **supprimé** (clés dans `.env` maintenant)
+> - `src/code-city/state.js` ✅ `apiKeys[]`, `registerPresets()`, `findPreset()`, `getPresetCategory()`, `getApiKeyForProvider()` supprimés
+> - `~35 tests` migrés (voir `providerLoader.test.js`, `envLoader.test.js`, `providerPanel.test.js`, `workflowRunner.test.js`, `aiClient.test.js`, `state.test.js`)
+>
+> **Drift mineur observé :** `state.js` n'a pas exactement la même structure que celle décrite en §6.1 — le state final intègre en plus `chatHistory`, `currentPrompt`, `promptHistory`, `promptCache`, `contextWindow`, `preparationModel`, `optimizationThreshold`, `optimizationStats` (ajoutés par les specs ultérieures).
+>
 > **Objectif :** Refactoriser complètement le système de providers IA pour le rendre maintenable, configurable via JSON, et séparer clés API / configs / grille.
 > **Impact estimé :** ~15 fichiers créés/modifiés/supprimés, ~227 tests à adapter
 

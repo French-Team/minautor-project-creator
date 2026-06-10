@@ -1,5 +1,20 @@
 # Plan de travail — Propriétés de nœuds & Export intelligent
 
+> ✅ **Statut d'implémentation** (mis à jour : juin 2026) : **Implémenté** — toutes les phases 0 à 7 sont en production
+>
+> - **Phase 0** (Snapshot deep-clone `properties`) ✅ — `state.js` snapshot() clone les `properties`
+> - **Phase 1** (Schémas par catégorie) ✅ — `src/code-city/propertySchemas.js` créé, 17 schémas (`CATEGORY_SCHEMAS`), `getCategory(type)`, `getSchemaForType(type)`
+> - **Phase 2** (Persistance) ✅ — `persistence.js` inclut `properties`, `loadGraph` restaure, `navigator.storage.estimate()` warning > 80% quota
+> - **Phase 3** (Générateur de doc) ✅ — `src/code-city/mermaid/docGenerator.js` créé, templates par catégorie (process, decision, service, devops, arch, sec, data, proj, test, uiux, pattern, env, component, git, msg, init, dep)
+> - **Phase 4** (Multi-niveaux : selected / subtree / full) ✅ — `resolveSubtree()` BFS, `topologicalSort()` Kahn
+> - **Phase 5** (Export ZIP) ✅ — `src/code-city/mermaid/zipExporter.js` créé (JSZip), `zipConstants.js` avec `PRIORITY_ORDER` + `SPRINT_META`, structure en 5 sprints (critical → backlog)
+> - **Phase 6** (Refonte panneau export) ✅ — `src/code-city/quartierRight/exportPanel.js` avec modes, formats, ZIP
+> - **Phase 7** (Mermaid ↔ propriétés) ✅ — annotations `%% @props` dans `build.js`, round-trip parser/build
+> - **Phase 8** (visuel) ⏳ **partiellement** — badges statut `proj-*` non implémentés, indicateur priorité visuel non implémenté
+> - 4 tests E2E dédiés : `e2e/properties.spec.js`, `e2e/mermaid-properties-sync.spec.js`, `e2e/export.spec.js`, `e2e/export-preview.spec.js` ✅
+> - **Drift mineur** : la spec parlait de `getAllTypes()` dans `propertySchemas.js` — cette fonction n'a pas été créée (les types restent dans `menuMermaidActionsLeft.js`)
+> - **Drift mineur** : la structure ZIP finale utilise des **sprints de priorité** (5 dossiers) au lieu des dossiers par catégorie (`plan/`, `components/`, `devops/`, `security/`, `testing/`, `project/`, etc.) — c'est [`zipExporter.js`](../src/code-city/mermaid/zipExporter.js) qui l'illustre
+
 ## Vision
 
 Utiliser le canvas comme outil de **conception de projet sans coder**. Chaque nœud du diagramme représente un élément du projet (composant, service, tâche, décision…). Les propriétés de chaque nœud stockent les informations métier. L'export génère de la **documentation vivante** à partir de ces informations.

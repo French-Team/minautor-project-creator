@@ -1,0 +1,157 @@
+name: E2E Nightly (Providers @slow)
+
+# Tests d'intégration providers (cf. .dev-plans/providers-e2e-spec.md)
+# Lance la suite @slow (8 fichiers dans e2e/providers/) avec de vraies
+# clés API issues des secrets GitHub. Upload les artefacts Playwright
+# (test-results, playwright-report, traces, vidéos, screenshots) en
+# cas d'échec.
+
+on:
+  # Schedule : tous les jours à 03:00 UTC (heures creuses)
+  schedule:
+    - cron: '0 3 * * *'
+
+  # Déclenchement manuel depuis l'onglet Actions (utile pour debug)
+  workflow_dispatch:
+    inputs:
+      grep:
+        description: 'Filtre grep optionnel (ex: "openrouter")'
+        required: false
+        default: ''
+
+  # Re-run possible depuis l'UI GitHub même en cas d'échec
+
+concurrency:
+  group: nightly-e2e
+  cancel-in-progress: true
+
+jobs:
+  e2e-nightly:
+    name: E2E Nightly @slow
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+
+    # Branche par défaut pour le checkout (nécessaire pour schedule)
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build helper info
+        id: helper
+        run: |
+          echo "## Providers détectés" >> $GITHUB_STEP_SUMMARY
+          echo "| Provider | Clé API | Skip attendu |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|---------|--------------|" >> $GITHUB_STEP_SUMMARY
+          for kv in "openrouter:OPENROUTER_API_KEY" "groq:GROQ_API_KEY" "mistral:MISTRAL_API_KEY" "gemini:GEMINI_API_KEY" "opencode-zen:OPENCODE_ZEN_API_KEY"; do
+            provider="${kv%%:*}"
+            key="${kv##*:"
+            if [ -n "${!key:-}" ]; then
+              echo "| $provider | ✅ présente | non |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $provider | ❌ absente | oui |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "| kilo | (aucune) | non |" >> $GITHUB_STEPUMMARY
+          echo "| ollama | (locale) | non si démarré |" >> $GITHUB_STEP_SUMMARY
+          echo "| lmstudio | (locale) | non si démarré |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Run nightly E2E @slow
+        id: tests
+        env:
+          # Secrets GitHub → variables d'env (cf. README §setup.env)
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_ZEN_API_KEY: ${{ secrets.OPENCODE_ZEN_API_KEY }}
+          # Filtre optionnel depuis workflow_dispatch
+          PLAYWRIGHT_GREP: ${{ inputs.grep }}
+        run: |
+          if [ -n "${{ inputs.grep }}" ]; then
+            echo "▶️  Filtre custom : ${{ inputs.grep }}"
+            npx playwright test --grep "${{ inputs.grep }}" --grep "@slow"
+          else
+            echo "▶️  Suite @slow complète"
+            npx playwright test --grep @slow
+          fi
+        continue-on-error: true   # On veut toujours uploader les artefacts
+
+      - name: Compute test summary
+        id: summary
+        if: always()
+        run: |
+          {
+            echo "## Résumé nightly E2E"
+            echo ""
+            if [ -f playwright-report/data.json ]; then
+              # Extraire les stats du rapport Playwright
+              echo "| Métrique | Valeur |"
+              echo "|----------|--------|"
+              node -e "
+                const r = require('./playwright-report/data.json');
+                const stats = r.stats || {};
+                console.log('| Tests total     | ' + (stats.expected || 0) + ' |');
+                console.log('| Tests passés     | ' + ((stats.expected || 0) - (stats.unexpected || 0) - (stats.skipped || 0)) + ' |');
+                console.log('| Tests échoués    | ' + (stats.unexpected || 0) + ' |');
+                console.log('| Tests skippés    | ' + (stats.skipped || 0) + ' |');
+                console.log('| Flaky            | ' + (stats.flaky || 0) + ' |');
+                console.log('| Durée (s)        | ' + Math.round((stats.duration || 0) / 1000) + ' |');
+              " || true
+            else
+              echo "_Rapport Playwright non généré_"
+            fi
+          } >> $GITHUB_STEP_SUMMARY
+
+      # ===== Artefacts : toujours uploadés =====
+      # En cas de succès, pour avoir une trace des runs OK
+      # En cas d'échec, pour débugger
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-nightly-${{ github.run_id }}
+          path: playwright-report/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload test-results (traces, videos, screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-nightly-${{ github.run_id }}
+          path: test-results/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload blob reports (JUnit XML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-nightly-${{ github.run_id }}
+          path: blob-report/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # ===== Notification en cas d'échec =====
+      - name: Fail if tests failed
+        if: steps.tests.outcome == 'failure'
+        run: |
+          echo "❌ Tests nightly E2E échoués"
+          echo "Voir les artefacts : https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1

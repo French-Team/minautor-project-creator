@@ -15,7 +15,7 @@
 
 import { MAX_HISTORY_MESSAGES } from './ai/chatHistory.js';
 import { getPreset } from './ai/providerLoader.js';
-import { hasApiKey } from './ai/envLoader.js';
+import { hasApiKey, getApiKeyForEnvKey, loadEnvKeys } from './ai/envLoader.js';
 import { getProviderConfig, getActiveProvider, setActiveProvider, listSavedProviders } from './ai/providerStore.js';
 import validationModels from './data/validation-models.json';
 
@@ -170,6 +170,15 @@ export async function initAssistant() {
     }
     if (typeof savedConfig?.preparationModel === 'string' && savedConfig.preparationModel) {
       state.assistant.preparationModel = savedConfig.preparationModel;
+    }
+
+    // Charger la clé API depuis .env et l'attacher au provider
+    await loadEnvKeys();
+    if (preset?.envKey) {
+      const apiKey = getApiKeyForEnvKey(preset.envKey);
+      if (apiKey) {
+        state.assistant.provider.apiKey = apiKey;
+      }
     }
 
     // Mettre en cache in-memory
@@ -842,6 +851,14 @@ n   */
       state.assistant.preparationModel = null;
     }
 
+    // Charger la clé API depuis .env et l'attacher au provider
+    if (preset?.envKey) {
+      const apiKey = getApiKeyForEnvKey(preset.envKey);
+      if (apiKey) {
+        state.assistant.provider.apiKey = apiKey;
+      }
+    }
+
     state.assistant.providerConfigs = configs;
 
     // Persister UNIQUEMENT l'ID du provider actif (pas la config complète)
@@ -858,6 +875,8 @@ n   */
   updateProvider(patch) {
     Object.assign(state.assistant.provider, patch);
     // Synchroniser le cache in-memory seulement
+    // Note : apiKey est inclus dans saved (il est sur le provider) mais
+    // sera retiré à la sauvegarde disque dans providerPanel.js (logique voulue)
     const id = state.assistant.provider?.id;
     if (id) {
       const configs = state.assistant.providerConfigs || {};
@@ -1047,6 +1066,25 @@ n   */
     const removed = history.pop();
     persistChatHistory();
     notify({ type: 'assistant:chat-message-removed', message: removed });
+    return removed;
+  },
+
+  /**
+   * Supprime tous les messages à partir de l'index `fromIndex` (inclus).
+   * Utilisé par le bouton « Modifier » d'un message user : on tronque
+   * l'historique à partir du message édité + tous les messages qui suivent
+   * (réponse assistant, etc.) pour que l'utilisateur puisse renvoyer.
+   * @param {number} fromIndex - Index à partir duquel supprimer (0-based)
+   * @returns {Array} Les messages supprimés
+   */
+  popLastChatMessagesFromIndex(fromIndex) {
+    const history = state.assistant.chatHistory;
+    if (!Array.isArray(history) || fromIndex < 0 || fromIndex >= history.length) {
+      return [];
+    }
+    const removed = history.splice(fromIndex);
+    persistChatHistory();
+    notify({ type: 'assistant:chat-truncated', fromIndex, removed });
     return removed;
   },
 

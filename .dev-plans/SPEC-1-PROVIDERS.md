@@ -2,6 +2,15 @@
 
 > **Chaîne de specs** : [Spec 1 (Providers)](#spec-1--configuration-des-providers-ia) → [Spec 2 (Assistant)](SPEC-2-ASSISTANT.md) → [Spec 3 (Intégration)](SPEC-3-INTEGRATION.md)
 
+> ⚠️ **Statut d'implémentation** (mis à jour : juin 2026) :
+>
+> - ✅ **Implémenté** mais **SUPERSEDED** par [`provider-refactor-spec.md`](provider-refactor-spec.md)
+> - Le contenu de cette spec reste valide comme **vision initiale**, mais l'implémentation actuelle utilise des **fichiers JSON** (`src/code-city/data/provider-configs.json`) au lieu de `src/code-city/ai/providerPresets.js`
+> - `providerPresets.js` a été **supprimé** du code
+> - La persistance localStorage a été remplacée par des fichiers JSON serveur (`/api/providers/{id}.json`)
+> - Le panneau UI a été refondu en 3 zones — voir [`provider-panel-redesign-spec.md`](provider-panel-redesign-spec.md) et [`provider-panel-implementation-guide.md`](provider-panel-implementation-guide.md)
+> - Consulter cette spec pour le **pourquoi** des décisions, le code actuel pour le **comment**
+
 ---
 
 ## Contexte

@@ -1,5 +1,19 @@
 # Spec : Améliorations des catégories de la palette
 
+> ✅ **Statut d'implémentation** (mis à jour : juin 2026) : **Implémenté** — toutes les améliorations décrites sont en production
+>
+> - **17 catégories** ✅ (vs 14 dans `complete-sidebar-spec.md`) — `arch`, `data`, `project` ajoutées
+> - **Toutes les catégories `defaultOpen: false`** ✅ (vérifié dans le code)
+> - **Bouton « Tout ouvrir / Tout fermer »** ✅ — `#palette-collapse-btn` dans `code-city.js`, fonction `toggleAllSections()` dans `menuMermaidActionsLeft.js` (ligne 1610)
+> - **Regroupement thématique** ✅ — 9 groupes (Fondamentaux, Frontend, Backend, Architecture, Data, Qualité, Processus, Infrastructure, Support)
+> - **3 catégories fusionnées** : `Réseau → DevOps`, `Qualité code → Tests`, `Intégrations → Services` ✅
+> - **Icônes inutilisées intégrées** : `beaker`, `play`, `serverStack`, `globe`, `cursor`, `eye`, `funnel`, `chartBar` ✅
+> - `src/code-city/quartierLeft/fonctionsMermaidLeft/menuMermaidActionsLeft/menuMermaidActionsLeft.js` ✅ modifié
+> - `src/code-city/code-city.js` ✅ bouton ajouté dans `sidebar__head`
+> - `src/code-city/mermaid/build.js` ✅ nouveaux types dans `SHAPE_BY_TYPE` et `shapeFor()`
+> - `src/styles/default.css` ✅ styles du bouton et nouvelles couleurs `data-type`
+> - **Drift mineur** : la spec parlait de `chartBar` dans la liste des icônes intégrées mais l'icône dans `icons.js` est nommée `chart` (équivalent visuel) — pas de bug, juste nomenclature
+
 ## Contexte
 
 L'application **Mermaid Canvas** dispose actuellement de **14 catégories** dans la sidebar gauche (palette), dont **6 ouvertes par défaut** (base, advanced, components, services, testing, devops). L'objectif est de :

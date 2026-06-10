@@ -2,6 +2,16 @@
 
 > **Chaîne de specs** : [Spec 1 (Providers)](SPEC-1-PROVIDERS.md) → [Spec 2 (Assistant)](SPEC-2-ASSISTANT.md) → [Spec 3 (Intégration)](#spec-3--intégration-dans-le-workflow)
 
+> ✅ **Statut d'implémentation** (mis à jour : juin 2026) :
+>
+> - **Implémenté** — toutes les fonctionnalités décrites sont en production
+> - `src/code-city/ai/chatPanel.js` — panneau chat, streaming, typewriter, quick actions, Markdown (`marked` + `highlight.js`)
+> - `src/code-city/ai/contextBuilder.js` — sérialisation canvas → texte pour prompts
+> - `src/code-city/ai/fimHandler.js` — FIM inline Mistral (déclencheur `Ctrl+Shift+C`)
+> - `src/code-city/ai/markdownRenderer.js` — ajouté dans le sprint [`chat-panel-improvements-spec.md`](chat-panel-improvements-spec.md)
+> - Raccourcis câblés dans `src/code-city/keyboard.js` (`Ctrl+Shift+A`, `Ctrl+Shift+C`, `/`)
+> - Cette spec reste la **référence du workflow utilisateur** (où apparaît l'IA, comment elle s'intègre aux actions de l'éditeur)
+
 ---
 
 ## Contexte

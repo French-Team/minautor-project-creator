@@ -1,5 +1,18 @@
 # Guide d'implémentation détaillé — Provider Panel Redesign
 
+> ✅ **Statut d'implémentation** (mis à jour : juin 2026) : **Implémenté** — les modules et styles décrits dans ce guide sont en production
+>
+> - Section A (`keyRotation.js`) ✅ implémenté
+> - Section B (`workflowRunner.js`) ✅ implémenté (y compris les tests avec vi fake timers)
+> - Section C (`aiClient.js` — `fetchModels`, `testModel`, normalisation OpenAI/Gemini/Ollama) ✅ implémenté
+> - Section D (`providerPanel.js` — 3 zones, event delegation) ✅ implémenté
+> - Section E (CSS — `.pp-status`, `.pp-grid`, `.pp-workflow__*`, `.pp-spinner`) ✅ implémenté dans `src/styles/default.css`
+> - Section F (`state.js` — `modelMeta`, migration apiKeys) ✅ partiellement implémenté (la migration `apiKeys` a été abandonnée : les clés sont dans `.env`, pas dans le state)
+> - Section G (`providerPresets.js` — `modelListingUrl`, `getOnlineProviders`, `getLocalProviders`) ✅ **refactor abandonné** : `providerPresets.js` a été supprimé, le contenu est dans `data/provider-configs.json`
+> - **Drift significatif sur G** : `getOnlineProviders()` / `getLocalProviders()` ont été remplacés par `getPresetsByCategory('online' | 'local')` depuis `providerLoader.js` (via `provider-refactor-spec.md`)
+> - Section H (résumé des modules et dépendances) ✅ reflète l'architecture finale
+> - Section I (checklist) — toutes les phases 1–8 sont cochées ✅
+
 **Ce document est la suite du spec technique (v1.4).** Il contient le code exact à écrire pour chaque module, les CSS, les structures DOM, et les mécanismes d'intégration. Pendant l'implémentation, on suit ce guide sans réfléchir.
 
 > **Dépendances existantes réutilisées** (pas besoin de les recréer) :

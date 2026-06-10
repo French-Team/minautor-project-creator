@@ -16,7 +16,9 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:ui": "npx playwright test --ui",
-    "test:report": "npx playwright show-report"
+    "test:report": "npx playwright show-report",
+    "test:e2e:fast": "npx playwright test --grep-invert @slow",
+    "test:e2e:nightly": "npx playwright test --grep @slow"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

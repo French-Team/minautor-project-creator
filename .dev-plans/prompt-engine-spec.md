@@ -2,6 +2,21 @@
 
 > **Version** : 2.1  
 > **Statut** : Validé — prêt pour implémentation  
+> **Statut d'implémentation** (mis à jour : juin 2026) : ✅ **Implémenté** — toutes les phases PE-1 à PE-4 sont en production
+>
+> - `src/code-city/ai/promptEngine.js` ✅ créé — classe `PromptEngine` avec `preparePrompt`, `optimizeResponse`, `getCurrentPrompt`, `clearCache`, `detectContextWindow`
+> - `src/code-city/ai/systemPrompt.js` ✅ étendu — `buildSystemMessages(graph, customPrompt, mode='replace'|'enrich')`
+> - `src/code-city/ai/chatPanel.js` ✅ section prompt repliable + bouton « ↻ Re-préparer » + post-optimisation
+> - `src/code-city/state.js` ✅ nouvelles clés `currentPrompt`, `promptHistory`, `promptCache`, `contextWindow`, `preparationModel`, `optimizationThreshold`, `optimizationStats`
+> - Cache par clé `{type}-{contextHash}` avec expiration 5min ✅
+> - Auto-détection de la fenêtre de contexte (Ollama `/api/show` + table de fallback) ✅
+> - Post-optimisation : seuil 500 tokens (slider 100-2000 dans le panneau Providers) ✅
+> - Stats d'optimisation cumulées (total optimisé, tokens économisés, taux de compression) ✅
+> - Modèle de préparation distinct (optionnel) — sélecteur dans le panneau Providers ✅
+> - `scripts/env-server.mjs` ⚠️ **partiel** — les endpoints `/api/prompts` n'ont **pas** été implémentés ; la spec prévoyait la persistance disque (`data/prompts/`) qui n'a pas été faite
+> - **Drift significatif** : la persistance disque des prompts préparés (`data/prompts/index.json` + fichiers `.md`) n'a pas été implémentée. Le `PromptEngine` fonctionne **uniquement en mémoire** (`state.assistant.promptCache` + `promptHistory`).
+> - Section UI « Prompt utilisé (analysis · préparé) » ✅ visible dans le chat (repliable)
+> - 1 fichier de test E2E `e2e/prompt-engine.spec.js` + tests unitaires `promptEngine.test.js` ✅
 > **Provider cible** : Local (Ollama / LM Studio) — pas de limite de crédit  
 > **Dépend de** : Provider configuré, chat panel (P0/P1), aiClient
 

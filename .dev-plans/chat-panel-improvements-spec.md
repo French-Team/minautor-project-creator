@@ -2,6 +2,17 @@
 
 > **Date :** 9 juin 2026
 > **Statut :** 🟢 En cours (sprint actuel en implémentation)
+> **Statut d'implémentation** (mis à jour : juin 2026) : 🟢 **Phases P0 + P1 TERMINÉES** — P2 partiellement reportée
+>
+> - ✅ **P0 — Fondamentales** : tous les items (B2, B3, B5, barre d'actions catégorisée, marked, placeholder, confirmation clear) sont en production
+> - ✅ **P1 — UX Streaming** : tous les items (typewriter lettre par lettre, curseur clignotant, stats header avec barre + fade out 2s, raccourci `/`, scroll throttle, rendu Markdown streaming) sont en production
+> - ✅ **P1 — Highlight.js** : installé, configuré, thèmes clair/sombre appliqués
+> - ⏳ **P2 — Reporté** : 2 items non implémentés
+>   - ⏳ Bouton « modifier » sur les messages user (item #17)
+>   - ⏳ Améliorer les transitions d'ouverture/fermeture du panneau (item #18)
+> - Cette spec garde la trace de toutes les décisions et sert de référence pour l'évolution future du chat panel
+> - **Drift mineur** : la table de décision en §1 a été mise à jour au fil de l'eau mais conserve les 11 entrées initiales
+> - Pour la spec suivante (Prompt Engine), voir [`prompt-engine-spec.md`](prompt-engine-spec.md)
 > **Objectif :** Lister les éléments à finir et les améliorations de la fenêtre de chat (Mina).
 > **Contexte :** La fenêtre de chat est un panneau latéral rétractable (slide-in depuis la droite) avec streaming SSE, rendu Markdown maison, et intégration poussée avec les providers IA.
 

@@ -52,6 +52,22 @@ async function isChatPanelOpen(page) {
   });
 }
 
+/**
+ * Ouvre le panneau chat de manière robuste (anti-flaky sur Ctrl+Shift+A) :
+ *  - Click sur le body pour garantir le focus avant le keypress
+ *  - waitForFunction avec timeout 2s pour confirmer l'ouverture
+ *  - 500ms pour laisser la transition slide-in (220ms) se terminer
+ */
+async function openChat(page) {
+  await page.locator('body').click({ position: { x: 10, y: 10 } });
+  await page.keyboard.press('Control+Shift+a');
+  await page.waitForFunction(
+    () => document.getElementById('app-chat')?.classList.contains('is-open') ?? false,
+    { timeout: 2000 },
+  );
+  await page.waitForTimeout(500);
+}
+
 /* ---------------------------------------------------------------------------
  * Tests — FIM Floating Button visibility
  * -------------------------------------------------------------------------- */
@@ -312,8 +328,7 @@ test.describe('FIM - Action rapide Completer code', () => {
 
   test('11 - L action rapide Completer code est presente quand un provider est configure', async ({ page }) => {
     // Ouvrir le panneau chat
-    await page.keyboard.press('Control+Shift+a');
-    await page.waitForTimeout(400);
+    await openChat(page);
     expect(await isChatPanelOpen(page)).toBe(true);
 
     // Verifier que l action rapide Completer code existe
@@ -326,16 +341,14 @@ test.describe('FIM - Action rapide Completer code', () => {
 
   test('12 - Les quick actions incluent le bouton fim avec provider Mistral', async ({ page }) => {
     // Avec Mistral, le bouton fim est present
-    await page.keyboard.press('Control+Shift+a');
-    await page.waitForTimeout(400);
+    await openChat(page);
 
     const fimBtn = page.locator('[data-quick-action="fim"]');
     await expect(fimBtn).toBeAttached();
   });
 
   test('13 - Les 5 actions rapides sont presentes (4 originales + Completer code)', async ({ page }) => {
-    await page.keyboard.press('Control+Shift+a');
-    await page.waitForTimeout(400);
+    await openChat(page);
 
     const quickBtns = page.locator('[data-quick-action]');
     const count = await quickBtns.count();

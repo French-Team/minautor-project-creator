@@ -59,6 +59,40 @@ async function isChatPanelOpen(page) {
   });
 }
 
+/**
+ * Ouvre le panneau chat de manière robuste :
+ *  - Click sur le body pour garantir le focus
+ *  - waitForFunction avec timeout 2s
+ *  - 500ms pour la transition slide-in
+ */
+async function openChat(page) {
+  await page.locator('body').click({ position: { x: 10, y: 10 } });
+  await page.keyboard.press('Control+Shift+a');
+  await page.waitForFunction(
+    () => document.getElementById('app-chat')?.classList.contains('is-open') ?? false,
+    { timeout: 2000 },
+  );
+  await page.waitForTimeout(500);
+}
+
+/**
+ * Ouvre le panneau chat de manière robuste :
+ *  - Click sur le body pour garantir qu'un élément a le focus (sinon Ctrl+Shift+A
+ *    peut être ignoré sur certaines configs Playwright)
+ *  - waitForFunction avec timeout 2s pour attendre que le panneau soit RÉELLEMENT
+ *    ouvert (au lieu d'un waitForTimeout fixe qui peut être trop court ou trop long)
+ *  - 500ms supplémentaires pour laisser la transition slide-in (220ms) se terminer
+ */
+async function openChat(page) {
+  await page.locator('body').click({ position: { x: 10, y: 10 } });
+  await page.keyboard.press('Control+Shift+a');
+  await page.waitForFunction(
+    () => document.getElementById('app-chat')?.classList.contains('is-open') ?? false,
+    { timeout: 2000 },
+  );
+  await page.waitForTimeout(500);
+}
+
 /* ---------------------------------------------------------------------------
  * Tests - Raccourci clavier Ctrl+Shift+A
  * -------------------------------------------------------------------------- */
@@ -73,15 +107,13 @@ test.describe('Assistant - Ctrl+Shift+A ouvre le chat', () => {
   test('1 - Ctrl+Shift+A ouvre le panneau chat', async ({ page }) => {
     expect(await isChatPanelOpen(page)).toBe(false);
 
-    await page.keyboard.press('Control+Shift+a');
-    await page.waitForTimeout(400);
+    await openChat(page);
 
     expect(await isChatPanelOpen(page)).toBe(true);
   });
 
   test('2 - Ctrl+Shift+A avec le chat deja ouvert ne cree pas de doublon', async ({ page }) => {
-    await page.keyboard.press('Control+Shift+a');
-    await page.waitForTimeout(400);
+    await openChat(page);
     expect(await isChatPanelOpen(page)).toBe(true);
 
     // Reappuyer - ne devrait pas crasher
@@ -91,8 +123,7 @@ test.describe('Assistant - Ctrl+Shift+A ouvre le chat', () => {
   });
 
   test('3 - Escape ferme le panneau chat', async ({ page }) => {
-    await page.keyboard.press('Control+Shift+a');
-    await page.waitForTimeout(400);
+    await openChat(page);
     expect(await isChatPanelOpen(page)).toBe(true);
 
     await page.keyboard.press('Escape');

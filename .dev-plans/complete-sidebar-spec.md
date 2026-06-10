@@ -1,5 +1,15 @@
 # Spec : Compléter les catégories de la sidebar
 
+> ✅ **Statut d'implémentation** (mis à jour : juin 2026) : **Implémenté** — toutes les 14 catégories et ~62 éléments décrits sont en production
+>
+> - `src/code-city/quartierLeft/fonctionsMermaidLeft/menuMermaidActionsLeft/menuMermaidActionsLeft.js` ✅ étendu
+> - `src/code-city/mermaid/build.js` ✅ `SHAPE_BY_TYPE` étendu avec les nouveaux types
+> - `src/code-city/icons.js` ✅ nouvelles icônes (`tag`, `lock`, `beaker`, `play`, `server`, `globe`, `cursor`, `eye`, `funnel`, `chart`) intégrées
+> - `src/styles/default.css` ✅ couleurs `data-type` ajoutées pour les ~30 nouveaux types
+> - 2 nouvelles couleurs `data-color` : `teal` et `rose` (light + dark) ✅
+> - Cette spec a été **elle-même étendue** par [`categories-improvements-spec.md`](categories-improvements-spec.md) (14 → 17 catégories)
+> - **Drift mineur** : la spec parle de `icon: 'cursor'` (UI/UX) mais l'icône s'appelle en réalité `cursor` dans le registre ; la spec reste cohérente
+
 ## Contexte
 
 L'application **Mermaid Canvas** est un outil de diagrammation visuelle avec drag & drop qui génère du code Mermaid. La sidebar gauche (palette) contient actuellement **6 catégories** avec **24 éléments** au total. L'objectif est de compléter cette palette en enrichissant les catégories existantes et en en ajoutant de nouvelles pour couvrir le **développement logiciel général**.

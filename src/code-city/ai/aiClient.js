@@ -549,6 +549,16 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
     return result;
   }
 
+  // OpenCode Zen : les deux formats (responses/messages) utilisent des endpoints
+  // non-standard non gérés par le parsing SSE. Fallback non-streaming vers
+  // chatCompletion() qui gère la détection automatique du format.
+  if (provider.id === 'opencode-zen') {
+    const result = await chatCompletion(provider, messages);
+    if (onToken) onToken(result.content);
+    if (onDone) onDone();
+    return result;
+  }
+
   let apiKey = provider.apiKey;
   let url = toLocalUrl(buildEndpointUrl(provider), provider.id);
 
@@ -916,20 +926,28 @@ function normalizeOllamaModels(data) {
 export async function testModel(provider, modelId) {
   const start = Date.now();
 
+  // Détecter le format réel (OpenCode Zen peut utiliser OpenAI ou Anthropic)
+  let detectedRequestFormat = 'openai';
+
   // Test chat (noRotation=true pour éviter rotation pendant test modèle)
   // Note: parseOpenAIResponse gère automatiquement les formats OpenAI et Anthropic
   await chatCompletion(
     { ...provider, model: modelId },
     [{ role: 'user', content: 'Say hello' }],
-    { maxRetries: 3, noRotation: true }
+    {
+      maxRetries: 3,
+      noRotation: true,
+      onFormatDetected: (format) => { detectedRequestFormat = format; },
+    }
   );
 
   const latency = Date.now() - start;
 
-  // Détection format - 'openai' par défaut, 'gemini' pour Gemini
-  // Note: OpenCode Zen peut utiliser soit OpenAI soit Anthropic, mais parseOpenAIResponse
-  // gère les deux formats automatiquement, donc pas besoin de détection ici
-  let format = provider.id === 'gemini' ? 'gemini' : 'openai';
+  // Détection format :
+  //   Gemini → 'gemini'
+  //   OpenCode Zen → tel que détecté par onFormatDetected ('openai' | 'anthropic')
+  //   Autres → 'openai'
+  let format = provider.id === 'gemini' ? 'gemini' : detectedRequestFormat;
 
   const capabilities = ['chat'];
 
@@ -961,6 +979,7 @@ export async function testModel(provider, modelId) {
 
   return {
     format, // 'openai' | 'anthropic' | 'gemini'
+    requestFormat: format, // Alias pour buildEndpointUrl() qui lit modelMeta.requestFormat
     capabilities,
     contextWindow: null,
     latency,

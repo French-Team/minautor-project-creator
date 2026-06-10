@@ -412,9 +412,17 @@ function renderProviderNotice() {
 function renderHistoryMessage(msg) {
   if (msg.role === 'user') {
     return `
-      <div class="chat-msg chat-msg--user">
+      <div class="chat-msg chat-msg--user" data-msg-role="user">
         <div class="chat-msg__bubble">${escapeHtml(msg.content)}</div>
-        ${msg.timestamp ? `<span class="chat-msg__time">${formatTime(msg.timestamp)}</span>` : ''}
+        <div class="chat-msg__actions">
+          <button type="button" class="chat-msg__edit-btn" data-action="edit-message" title="Modifier ce message" aria-label="Modifier ce message">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+          </button>
+          ${msg.timestamp ? `<span class="chat-msg__time">${formatTime(msg.timestamp)}</span>` : ''}
+        </div>
       </div>
     `;
   }
@@ -590,6 +598,13 @@ function handleChatBodyClick(e) {
     handleRepreparePrompt();
     return;
   }
+
+  // Edit message button (user message)
+  const editBtn = e.target.closest('[data-action="edit-message"]');
+  if (editBtn) {
+    handleEditMessage(editBtn);
+    return;
+  }
 }
 
 /* ---------- Send message ---------- */
@@ -747,6 +762,101 @@ async function sendMessage(text, options = {}) {
 function stopStreaming() {
   if (streamAbortController) {
     streamAbortController.abort();
+  }
+}
+
+/* ---------- Edit message ---------- */
+
+/**
+ * Trouve l'index d'un message user dans l'historique à partir d'un bouton d'édition.
+ * On remonte le DOM depuis le bouton jusqu'à `.chat-msg--user` puis on compte
+ * les `.chat-msg--user` qui précèdent (incluant celui-ci) pour obtenir l'index.
+ * @param {HTMLElement} btn - Le bouton d'édition cliqué
+ * @returns {number|null} L'index du message user dans chatHistory, ou null
+ */
+function findUserMessageIndex(btn) {
+  const msgDiv = btn.closest('.chat-msg--user');
+  if (!msgDiv) return null;
+
+  const body = panelEl?.querySelector('#app-chat-body');
+  if (!body) return null;
+
+  const allUserMsgs = Array.from(body.querySelectorAll('.chat-msg--user'));
+  const idxInDom = allUserMsgs.indexOf(msgDiv);
+  if (idxInDom === -1) return null;
+
+  // L'historique du state peut contenir des messages assistant et user entrelacés.
+  // On parcourt chatHistory en ordre et on compte les 'user' jusqu'à tomber sur
+  // celui qui correspond (par contenu + timestamp approximatif).
+  const targetText = msgDiv.querySelector('.chat-msg__bubble')?.textContent || '';
+  const history = getState().assistant?.chatHistory || [];
+  let userCount = 0;
+  for (let i = 0; i < history.length; i++) {
+    if (history[i].role === 'user') {
+      if (userCount === idxInDom && history[i].content === targetText) {
+        return i;
+      }
+      userCount++;
+    }
+  }
+  // Fallback : si on n'a pas trouvé par contenu (caractères échappés), on prend
+  // l'index i si userCount correspond
+  return null;
+}
+
+/**
+ * Gère le clic sur le bouton « Modifier » d'un message user.
+ * - Refuse si un streaming est en cours (isThinking)
+ * - Trouve l'index du message dans l'historique
+ * - Supprime tous les messages à partir de cet index (incluant la réponse assistant suivante)
+ * - Injecte le texte dans le textarea
+ * - Focus le textarea
+ * - Re-render le panneau (les messages supprimés disparaissent)
+ */
+function handleEditMessage(btn) {
+  if (isThinking || isOptimizing) {
+    if (typeof toast !== 'undefined' && toast?.warning) {
+      toast.warning('Une réponse est en cours — attends qu\'elle se termine pour modifier.');
+    }
+    return;
+  }
+
+  const idx = findUserMessageIndex(btn);
+  if (idx === null) return;
+
+  const history = getState().assistant?.chatHistory || [];
+  const msg = history[idx];
+  if (!msg || msg.role !== 'user') return;
+
+  // 1) Truncate l'historique à partir de cet index
+  actions.popLastChatMessagesFromIndex(idx);
+
+  // 2) Retirer les bulles du DOM à partir de ce message
+  const msgDiv = btn.closest('.chat-msg--user');
+  if (msgDiv) {
+    // Supprimer ce message et tous les suivants (siblings)
+    let next = msgDiv.nextElementSibling;
+    msgDiv.remove();
+    while (next) {
+      const toRemove = next;
+      next = next.nextElementSibling;
+      toRemove.remove();
+    }
+  }
+
+  // 3) Injecter le texte dans le textarea
+  setInputValue(msg.content);
+
+  // 4) Focus le textarea
+  const input = panelEl?.querySelector('#chat-input');
+  if (input) {
+    input.focus();
+    // Placer le curseur à la fin du texte
+    const len = input.value.length;
+    input.setSelectionRange(len, len);
+    // Auto-resize
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
   }
 }
 

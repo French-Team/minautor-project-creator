@@ -2,6 +2,15 @@
 
 > **Chaîne de specs** : [Spec 1 (Providers)](SPEC-1-PROVIDERS.md) → [Spec 2 (Assistant)](#spec-2--définition-de-lassistant-ia) → [Spec 3 (Intégration)](SPEC-3-INTEGRATION.md)
 
+> ✅ **Statut d'implémentation** (mis à jour : juin 2026) :
+>
+> - **Implémenté** — les modules existent et sont en production
+> - `src/code-city/ai/systemPrompt.js` — system prompt + construction du contexte
+> - `src/code-city/ai/chatHistory.js` — `trimHistory`, `estimateTokens`, `MAX_HISTORY_MESSAGES`
+> - `src/code-city/ai/quickActions.js` — actions rapides (refondu en `QUICK_ACTION_CATEGORIES` + `ACTION_ICONS` par [`chat-panel-improvements-spec.md`](chat-panel-improvements-spec.md))
+> - Cette spec reste la **référence de la personnalité** de Mina (ton, posture, principes, format de réponse)
+> - Le **contenu** de `SYSTEM_PROMPT` a légèrement évolué (versions ultérieures), mais les principes et capacités sont respectés
+
 ---
 
 ## Contexte
