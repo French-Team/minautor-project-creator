@@ -13,6 +13,7 @@ import { getState, actions } from '../state.js';
 import { getPreset } from './providerLoader.js';
 import { toLocalUrl } from './aiClient.js';
 import { estimateTokens } from './chatHistory.js';
+import { tracePromptEngine, traceOptimizer } from './traceLogger.js';
 
 /* --------------------------------------------------------------------------
  * Types
@@ -409,18 +410,25 @@ export class PromptEngine {
    * Vide le cache mémoire.
    */
   clearCache() {
+    const beforeSize = this._cache.size;
     this._cache.clear();
+    tracePromptEngine('clearCache', { beforeSize, afterSize: this._cache.size });
   }
 
   /**
    * Nettoie les entrées expirées du cache.
    */
   _pruneCache() {
+    const beforeSize = this._cache.size;
     const now = Date.now();
     for (const [key, entry] of this._cache) {
       if (now > entry.expiresAt) {
         this._cache.delete(key);
       }
+    }
+    const removedCount = beforeSize - this._cache.size;
+    if (removedCount > 0) {
+      tracePromptEngine('cache PRUNE', { removedCount, remainingCount: this._cache.size });
     }
   }
 
@@ -461,7 +469,10 @@ export class PromptEngine {
    * @returns {Promise<number>}
    */
   static async detectContextWindow(provider, modelId) {
-    if (!modelId) return 4096;
+    if (!modelId) {
+      tracePromptEngine('detectContextWindow', { modelId: '', detected: 4096, source: 'default' });
+      return 4096;
+    }
 
     // 1. Essayer l'API Ollama /api/show
     if (provider?.id === 'ollama' && provider?.baseUrl) {
@@ -478,11 +489,17 @@ export class PromptEngine {
           const data = await resp.json();
           // Chercher context_length dans modelfile_info ou modelfile
           if (data.modelfile_info?.context_length) {
-            return parseInt(data.modelfile_info.context_length, 10);
+            const detected = parseInt(data.modelfile_info.context_length, 10);
+            tracePromptEngine('detectContextWindow', { modelId, detected, source: 'ollama-api' });
+            return detected;
           }
           if (data.modelfile) {
             const match = data.modelfile.match(/num_ctx\s+(\d+)/);
-            if (match) return parseInt(match[1], 10);
+            if (match) {
+              const detected = parseInt(match[1], 10);
+              tracePromptEngine('detectContextWindow', { modelId, detected, source: 'ollama-modelfile' });
+              return detected;
+            }
           }
         }
       } catch {
@@ -492,10 +509,14 @@ export class PromptEngine {
 
     // 2. Table de correspondance connue
     for (const [pattern, ctx] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
-      if (modelId.toLowerCase().includes(pattern)) return ctx;
+      if (modelId.toLowerCase().includes(pattern)) {
+        tracePromptEngine('detectContextWindow', { modelId, detected: ctx, source: 'table' });
+        return ctx;
+      }
     }
 
     // 3. Valeur par défaut
+    tracePromptEngine('detectContextWindow', { modelId, detected: 4096, source: 'default' });
     return 4096;
   }
 
@@ -528,22 +549,54 @@ export class PromptEngine {
    * @returns {PromptType}
    */
   categorizeMessage(message) {
-    if (!message || typeof message !== 'string') return 'conversation';
+    const t0 = Date.now();
+    if (!message || typeof message !== 'string') {
+      tracePromptEngine('categorizeMessage', {
+        userMessageLen: 0,
+        detectedType: 'conversation',
+        rulesMatched: 'none',
+        durationMs: Date.now() - t0,
+      });
+      return 'conversation';
+    }
 
     const trimmed = message.trim();
+    let rulesMatched = 'none';
 
     // Salutations courtes → conversation
     for (const pattern of SHORT_GREETING_PATTERNS) {
-      if (pattern.test(trimmed)) return 'conversation';
+      if (pattern.test(trimmed)) {
+        rulesMatched = 'short-greeting';
+        break;
+      }
     }
 
     // Parcourir les règles par ordre de priorité
-    for (const rule of CATEGORIZATION_RULES) {
-      if (rule.pattern.test(trimmed)) return rule.type;
+    if (rulesMatched === 'none') {
+      for (const rule of CATEGORIZATION_RULES) {
+        if (rule.pattern.test(trimmed)) {
+          rulesMatched = rule.type;
+          break;
+        }
+      }
     }
 
-    // Fallback
-    return 'conversation';
+    // Déterminer le type final
+    let detectedType = 'conversation';
+    if (rulesMatched === 'short-greeting') {
+      detectedType = 'conversation';
+    } else if (rulesMatched !== 'none') {
+      detectedType = rulesMatched;
+    }
+
+    tracePromptEngine('categorizeMessage', {
+      userMessageLen: message.length,
+      detectedType,
+      rulesMatched,
+      durationMs: Date.now() - t0,
+    });
+
+    return detectedType;
   }
 
   /* ----- Composition de prompt ----- */
@@ -557,7 +610,14 @@ export class PromptEngine {
   composePrompt(type, canvasCtx) {
     const template = PROMPT_TEMPLATES[type] || PROMPT_TEMPLATES.conversation;
     const contextText = formatContextForTemplate(canvasCtx, type);
-    return template.replace('{context}', contextText);
+    const result = template.replace('{context}', contextText);
+    tracePromptEngine('composePrompt', {
+      type,
+      templateLen: template.length,
+      composedLen: result.length,
+      contextTextLen: contextText.length,
+    });
+    return result;
   }
 
   /* ----- Préparation ----- */
@@ -584,14 +644,25 @@ export class PromptEngine {
     if (!forceRefresh) {
       const cHash = hashContext(graph.nodes, graph.edges);
       const cacheKey = `${type}-${cHash}`;
+      tracePromptEngine('cacheKey computed', { type, contextHash: cHash, fullKey: cacheKey });
       const cached = this._getFromCache(cacheKey);
       if (cached) {
         // Mettre à jour le message utilisateur (le contexte canvas est identique)
         cached.userMessage = userMessage;
         cached.cached = true;
         this._current = cached;
+        const expiresInMs = this._cache.get(cacheKey)?.expiresAt - Date.now();
+        tracePromptEngine('cache HIT', { cacheKey, promptId: cached.id, expiresInMs });
+        tracePromptEngine('preparePrompt COMPLETE', {
+          preparedId: cached.id,
+          type: cached.type,
+          cached: true,
+          apiEnhanced: cached.apiEnhanced,
+          durationMs: Date.now() - startTime,
+        });
         return cached;
       }
+      tracePromptEngine('cache MISS', { cacheKey });
     }
 
     // 3. Composer le prompt (localement, pas d'appel API)
@@ -610,10 +681,19 @@ export class PromptEngine {
 
       if (hasPreparationModel) {
         originalPrompt = prompt;
+        tracePromptEngine('enhancePromptViaApi ENTRY', {
+          originalLen: prompt.length,
+          tokenCount: estimateTokens(prompt),
+          model: provider.preparationModel,
+        });
         const enhanced = await this._enhancePromptViaApi(prompt);
         if (enhanced) {
           prompt = enhanced;
           apiEnhanced = true;
+          tracePromptEngine('enhancePromptViaApi SUCCESS', {
+            originalLen: originalPrompt.length,
+            enhancedLen: enhanced.length,
+          });
         }
       }
     }
@@ -643,6 +723,7 @@ export class PromptEngine {
     // 5. Cache + historique + current
     const cacheKey = `${type}-${cHash}`;
     this._setCache(cacheKey, prepared);
+    tracePromptEngine('cache SET', { cacheKey, promptId: prepared.id, expiresAt: Date.now() + this._cacheTTL });
     this._history.push(prepared);
     if (this._history.length > 20) {
       this._history.shift();
@@ -657,6 +738,14 @@ export class PromptEngine {
     // 7. Écrire sur le disque (fire-and-forget)
     this._writeToFile(prepared).catch(() => {});
 
+    tracePromptEngine('preparePrompt COMPLETE', {
+      preparedId: prepared.id,
+      type: prepared.type,
+      cached: false,
+      apiEnhanced,
+      durationMs: Date.now() - startTime,
+    });
+
     return prepared;
   }
 
@@ -670,15 +759,24 @@ export class PromptEngine {
    * @returns {Promise<string|null>} - Prompt amélioré ou null si échec
    */
   async _enhancePromptViaApi(composedPrompt) {
-    if (!composedPrompt || !composedPrompt.trim()) return null;
+    if (!composedPrompt || !composedPrompt.trim()) {
+      tracePromptEngine('enhancePromptViaApi SKIP', { reason: 'empty-prompt' });
+      return null;
+    }
 
     const tokenCount = estimateTokens(composedPrompt);
-    if (tokenCount < MIN_ENHANCEMENT_TOKENS) return null;
+    if (tokenCount < MIN_ENHANCEMENT_TOKENS) {
+      tracePromptEngine('enhancePromptViaApi SKIP', { tokenCount, minRequired: MIN_ENHANCEMENT_TOKENS });
+      return null;
+    }
 
     try {
       const state = getState();
       const provider = state.assistant?.provider;
-      if (!provider?.id) return null;
+      if (!provider?.id) {
+        tracePromptEngine('enhancePromptViaApi SKIP', { reason: 'no-provider' });
+        return null;
+      }
 
       const messages = [
         { role: 'system', content: ENHANCEMENT_SYSTEM_PROMPT },
@@ -701,11 +799,16 @@ export class PromptEngine {
       });
 
       const enhanced = result?.content?.trim();
-      if (!enhanced || enhanced === composedPrompt.trim()) return null;
+      if (!enhanced) return null;
+      if (enhanced === composedPrompt.trim()) {
+        tracePromptEngine('enhancePromptViaApi NO_CHANGE', { originalLen: composedPrompt.length });
+        return null;
+      }
 
       return enhanced;
     } catch (err) {
       console.warn('[PromptEngine] Échec amélioration prompt:', err.message);
+      tracePromptEngine('enhancePromptViaApi FAILED', { errorMsg: err.message?.slice(0, 200) });
       return null;
     }
   }
@@ -716,25 +819,82 @@ export class PromptEngine {
    * Post-optimisation : révise une réponse pour la rendre plus concise.
    * Appelle le modèle local avec un prompt d'optimisation.
    *
+   * Modes supportés (option `options.mode`) :
+   *   - 'replace' (défaut) : utilise `OPTIMIZATION_SYSTEM_PROMPT` seul comme
+   *     message système. Le LLM d'optimisation n'a pas connaissance du
+   *     prompt préparé utilisé pour la conversation.
+   *   - 'enrich' : concatène `OPTIMIZATION_SYSTEM_PROMPT` avec le contenu du
+   *     prompt préparé (`preparedPrompt.prompt`) pour donner au LLM
+   *     d'optimisation le contexte complet du projet. Émet l'événement
+   *     `[OPTIMIZER] optimizeResponse ENRICH` avec les longueurs
+   *     `customPromptLen` et `systemPromptLen`.
+   *
+   * Le mode 'enrich' est utile pour les projets où la concision doit
+   * respecter le contexte métier (par exemple conserver la terminologie
+   * spécifique d'un domaine).
+   *
    * @param {string} response - Réponse brute du modèle
    * @param {PreparedPrompt} preparedPrompt - Prompt préparé utilisé
    * @param {Object} provider - Provider pour l'appel API
+   * @param {Object} [options]
+   * @param {('replace'|'enrich')} [options.mode='replace'] - Mode d'enrichissement
    * @returns {Promise<string|null>} - Réponse optimisée ou null si échec
    */
-  async optimizeResponse(response, preparedPrompt, provider) {
-    if (!response || !response.trim()) return null;
-    if (!provider?.id) return null;
-
+  async optimizeResponse(response, preparedPrompt, provider, options = {}) {
+    const t0 = Date.now();
+    const { mode = 'replace' } = options;
     const tokenCount = estimateTokens(response);
     const threshold = DEFAULT_OPTIMIZATION_THRESHOLD;
+    traceOptimizer('optimizeResponse ENTRY', {
+      responseLen: response?.length || 0,
+      tokenCount,
+      threshold,
+      mode,
+      willOptimize: !!(response && response.trim()) && !!provider?.id && tokenCount > threshold,
+    });
+    if (!response || !response.trim()) {
+      traceOptimizer('optimizeResponse SKIP', { reason: 'empty-response' });
+      return null;
+    }
+    if (!provider?.id) {
+      traceOptimizer('optimizeResponse NO_PROVIDER', { hasProvider: false });
+      return null;
+    }
 
     // Ne pas optimiser si en dessous du seuil
-    if (tokenCount <= threshold) return null;
+    if (tokenCount <= threshold) {
+      traceOptimizer('optimizeResponse SKIP', { reason: 'below-threshold', tokenCount, threshold });
+      return null;
+    }
+
+    // Guard explicite : si le caller demande mode='enrich' mais qu'aucun
+    // prompt préparé n'est disponible, on émet une trace dédiée pour
+    // auditer l'intention du caller (vs un fallback silencieux vers
+    // 'replace' qui masquerait l'intention).
+    if (mode === 'enrich' && !preparedPrompt?.prompt) {
+      traceOptimizer('optimizeResponse SKIP', { reason: 'no-prepared-prompt' });
+      return null;
+    }
 
     try {
+      // Construire le system prompt selon le mode
+      // 'replace' (défaut) : OPTIMIZATION_SYSTEM_PROMPT seul
+      // 'enrich' : OPTIMIZATION_SYSTEM_PROMPT + contexte préparé
+      let systemPrompt = OPTIMIZATION_SYSTEM_PROMPT;
+      if (mode === 'enrich') {
+        systemPrompt = OPTIMIZATION_SYSTEM_PROMPT +
+          '\n\n---\n\n## Contexte du projet (prompt préparé)\n\n' +
+          preparedPrompt.prompt;
+        traceOptimizer('optimizeResponse ENRICH', {
+          customPromptLen: preparedPrompt.prompt.length,
+          systemPromptLen: OPTIMIZATION_SYSTEM_PROMPT.length,
+          enrichedLen: systemPrompt.length,
+        });
+      }
+
       // Construire les messages pour l'optimisation
       const messages = [
-        { role: 'system', content: OPTIMIZATION_SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: `Réponse originale :\n\n${response}` },
       ];
 
@@ -746,6 +906,14 @@ export class PromptEngine {
         maxTokens: Math.min(provider.maxTokens || 4096, 2048),
       };
 
+      traceOptimizer('optimizeResponse API_CALL', {
+        model: optimizationProvider.model,
+        messagesLen: 2,
+        temperature: 0.3,
+        maxTokens: optimizationProvider.maxTokens,
+        mode,
+      });
+
       // Importer dynamiquement pour éviter les dépendances circulaires
       const { chatCompletion } = await import('./aiClient.js');
 
@@ -755,11 +923,28 @@ export class PromptEngine {
       });
 
       const optimized = result?.content?.trim();
-      if (!optimized) return null;
+      if (!optimized) {
+        traceOptimizer('optimizeResponse EMPTY', { originalLen: response.length });
+        return null;
+      }
 
+      const optimizedTokens = estimateTokens(optimized);
+      const tokensSaved = Math.max(0, tokenCount - optimizedTokens);
+      const compressionRatio = Math.round((1 - optimized.length / response.length) * 100);
+      traceOptimizer('optimizeResponse SUCCESS', {
+        originalLen: response.length,
+        optimizedLen: optimized.length,
+        compressionRatio,
+        durationMs: Date.now() - t0,
+        tokensSaved,
+      });
       return optimized;
     } catch (err) {
       console.warn('[PromptEngine] Échec optimisation:', err.message);
+      traceOptimizer('optimizeResponse FAILED', {
+        errorMsg: err.message?.slice(0, 200),
+        originalLen: response?.length || 0,
+      });
       return null;
     }
   }
@@ -771,6 +956,11 @@ export class PromptEngine {
    * @param {PreparedPrompt} prepared
    */
   async _writeToFile(prepared) {
+    tracePromptEngine('writeToFile CALL', {
+      promptId: prepared.id,
+      filePath: prepared.filePath,
+      contentLen: prepared.prompt.length,
+    });
     try {
       const content = [
         `# Prompt préparé — ${capitalize(prepared.type)}`,
@@ -794,7 +984,7 @@ export class PromptEngine {
           : '- Nœuds sélectionnés : aucun',
       ].join('\n');
 
-      await fetch('/api/prompts', {
+      const resp = await fetch('/api/prompts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -808,8 +998,24 @@ export class PromptEngine {
           },
         }),
       });
+      if (resp.ok) {
+        tracePromptEngine('writeToFile SUCCESS', {
+          promptId: prepared.id,
+          filePath: prepared.filePath,
+          status: resp.status,
+        });
+      } else {
+        tracePromptEngine('writeToFile FAILED', {
+          promptId: prepared.id,
+          errorMsg: `HTTP ${resp.status}`,
+        });
+      }
     } catch (err) {
       console.warn('[PromptEngine] Échec écriture fichier:', err.message);
+      tracePromptEngine('writeToFile FAILED', {
+        promptId: prepared.id,
+        errorMsg: err.message?.slice(0, 200),
+      });
     }
   }
 }

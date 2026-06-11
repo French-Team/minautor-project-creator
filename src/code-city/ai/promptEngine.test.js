@@ -27,6 +27,17 @@ vi.mock('./aiClient.js', () => ({
   toLocalUrl: vi.fn((url) => url),
 }));
 
+// Mock traceLogger pour pouvoir spy sur les événements traceOptimizer émis
+// dans les tests optimizeResponse (Sprint CT-4 v1.4). Les autres tests
+// n'utilisent pas les traces donc le mock est inoffensif.
+vi.mock('./traceLogger.js', () => ({
+  traceChat: vi.fn(),
+  tracePromptEngine: vi.fn(),
+  traceOptimizer: vi.fn(),
+  traceAiClient: vi.fn(),
+  traceSystemPrompt: vi.fn(),
+}));
+
 // Mock actions (importé depuis state.js — on mocke au niveau du module)
 vi.mock('../state.js', () => ({
   getState: vi.fn(() => ({
@@ -608,6 +619,192 @@ describe('PromptEngine', () => {
       // Réponse courte (< 500 tokens) → skip optimization
       const result = await engine.optimizeResponse('Court message', null, { id: 'ollama' });
       expect(result).toBeNull();
+    });
+
+    /* ----------------------------------------------------------------------
+     * mode 'enrich' (Sprint CT-4 v1.4) — niché dans optimizeResponse() pour
+     * refléter la hiérarchie de l'API (mode = sous-fonctionnalité).
+     * 5 tests utilisent evenLongerResponse() (> 500 tokens) pour atteindre
+     * le guard enrich ; 1 test (précedence) utilise une réponse COURTE pour
+     * vérifier que le threshold check fire avant le guard enrich.
+     * ---------------------------------------------------------------------- */
+    describe("mode 'enrich'", () => {
+      /** Helper : construit une réponse > 500 tokens pour dépasser le seuil d'optimisation. */
+      function evenLongerResponse() {
+        return 'Réponse très détaillée pour test enrich. '.repeat(200); // ~5400 chars → > seuil
+      }
+      const samplePrepared = {
+        id: 'test-prepared-1',
+        type: 'analysis',
+        userMessage: 'Analyse',
+        prompt: 'Contexte du projet: 3 nœuds, 2 arêtes. Objectif: optimiser la structure.',
+        context: { nodeCount: 3, edgeCount: 2, selectedNodes: [], canvasSummary: '', contextHash: 'h1' },
+        apiEnhanced: false,
+        cached: false,
+        timestamp: Date.now(),
+        filePath: '',
+        duration: 0,
+      };
+
+      it("sans preparedPrompt émet SKIP reason='no-prepared-prompt' et retourne null", async () => {
+        const { traceOptimizer } = await import('./traceLogger.js');
+        // bypasses threshold check (> 500 tokens)
+        const result = await engine.optimizeResponse(
+          evenLongerResponse(), null, { id: 'ollama' }, { mode: 'enrich' }
+        );
+        expect(result).toBeNull();
+        expect(traceOptimizer).toHaveBeenCalledWith(
+          'optimizeResponse SKIP',
+          expect.objectContaining({ reason: 'no-prepared-prompt' }),
+        );
+      });
+
+      it("avec preparedPrompt.prompt vide émet SKIP reason='no-prepared-prompt'", async () => {
+        const { traceOptimizer } = await import('./traceLogger.js');
+        // bypasses threshold check (> 500 tokens)
+        const result = await engine.optimizeResponse(
+          evenLongerResponse(),
+          { id: 'x', type: 'analysis', prompt: '' },
+          { id: 'ollama' },
+          { mode: 'enrich' }
+        );
+        expect(result).toBeNull();
+        expect(traceOptimizer).toHaveBeenCalledWith(
+          'optimizeResponse SKIP',
+          expect.objectContaining({ reason: 'no-prepared-prompt' }),
+        );
+      });
+
+      it("avec preparedPrompt.prompt appelle chatCompletion, retourne le contenu optimisé ET émet [OPTIMIZER] optimizeResponse ENRICH", async () => {
+        const { chatCompletion } = await import('./aiClient.js');
+        const { traceOptimizer } = await import('./traceLogger.js');
+        const optimized = 'Réponse condensée.';
+        chatCompletion.mockResolvedValueOnce({ content: optimized });
+        // bypasses threshold check
+        const result = await engine.optimizeResponse(
+          evenLongerResponse(),
+          samplePrepared,
+          { id: 'ollama', model: 'llama3.2:3b' },
+          { mode: 'enrich' }
+        );
+
+        expect(chatCompletion).toHaveBeenCalledOnce();
+        expect(result).toBe(optimized);
+
+        // Vérifier que l'appel contient bien le contexte préparé concaténé
+        const callArgs = chatCompletion.mock.calls[0];
+        const messages = callArgs[1];
+        const systemMsg = messages.find((m) => m.role === 'system');
+        expect(systemMsg.content).toContain(samplePrepared.prompt);
+        expect(systemMsg.content).toContain('Contexte du projet (prompt préparé)');
+
+        // Assertion sur l'événement [OPTIMIZER] optimizeResponse ENRICH (lock du contrat d'observabilité)
+        expect(traceOptimizer).toHaveBeenCalledWith(
+          'optimizeResponse ENRICH',
+          expect.objectContaining({
+            customPromptLen: samplePrepared.prompt.length,
+            systemPromptLen: expect.any(Number),
+            enrichedLen: expect.any(Number),
+          }),
+        );
+      });
+
+      it("'replace' (défaut) n'émet PAS l'événement ENRICH et utilise OPTIMIZATION_SYSTEM_PROMPT seul", async () => {
+        const { chatCompletion } = await import('./aiClient.js');
+        const { traceOptimizer } = await import('./traceLogger.js');
+        const optimized = 'Condensé.';
+        chatCompletion.mockResolvedValueOnce({ content: optimized });
+        // bypasses threshold check
+        const result = await engine.optimizeResponse(
+          evenLongerResponse(),
+          samplePrepared,
+          { id: 'ollama', model: 'llama3.2:3b' },
+          { mode: 'replace' }
+        );
+
+        expect(chatCompletion).toHaveBeenCalledOnce();
+        expect(result).toBe(optimized);
+
+        // Vérifier que le system prompt ne contient PAS la concaténation
+        const callArgs = chatCompletion.mock.calls[0];
+        const messages = callArgs[1];
+        const systemMsg = messages.find((m) => m.role === 'system');
+        expect(systemMsg.content).not.toContain('Contexte du projet (prompt préparé)');
+        expect(systemMsg.content).not.toContain(samplePrepared.prompt);
+
+        // Pas d'événement ENRICH en mode replace
+        expect(traceOptimizer).not.toHaveBeenCalledWith(
+          'optimizeResponse ENRICH',
+          expect.anything(),
+        );
+      });
+
+      it("mode invalide fallback sur 'replace' (pas d'ENRICH, system prompt sans concaténation)", async () => {
+        const { chatCompletion } = await import('./aiClient.js');
+        const { traceOptimizer } = await import('./traceLogger.js');
+        chatCompletion.mockResolvedValueOnce({ content: 'OK' });
+        // bypasses threshold check
+        await engine.optimizeResponse(
+          evenLongerResponse(),
+          samplePrepared,
+          { id: 'ollama' },
+          { mode: 'invalid-mode' } // ignoré silencieusement, default = 'replace'
+        );
+
+        // L'appel a bien été fait (pas de throw)
+        expect(chatCompletion).toHaveBeenCalledOnce();
+
+        // Le system prompt NE contient PAS la concaténation (fallback replace)
+        const callArgs = chatCompletion.mock.calls[0];
+        const messages = callArgs[1];
+        const systemMsg = messages.find((m) => m.role === 'system');
+        expect(systemMsg.content).not.toContain('Contexte du projet (prompt préparé)');
+        expect(systemMsg.content).not.toContain(samplePrepared.prompt);
+
+        // Pas d'événement ENRICH pour mode invalide
+        expect(traceOptimizer).not.toHaveBeenCalledWith(
+          'optimizeResponse ENRICH',
+          expect.anything(),
+        );
+      });
+
+      /**
+       * Précédence des guards : la vérification du seuil de tokens (DEFAULT_OPTIMIZATION_THRESHOLD)
+       * fire AVANT le guard enrich-spécifique (no-prepared-prompt). Ce test documente cette
+       * précédence : une réponse COURTE avec mode='enrich' et un preparedPrompt valide doit
+       * déclencher SKIP reason='below-threshold', pas SKIP reason='no-prepared-prompt'.
+       * Ordre dans promptEngine.optimizeResponse() : threshold check → enrich guard.
+       */
+      it("réponse COURTE : SKIP below-threshold fire avant guard enrich (mode='enrich' valide)", async () => {
+        const { chatCompletion } = await import('./aiClient.js');
+        const { traceOptimizer } = await import('./traceLogger.js');
+        // Réutilise le samplePrepared du scope parent (mode 'enrich').
+
+        const result = await engine.optimizeResponse(
+          'Court.', // < 500 tokens → déclenche below-threshold, pas le guard enrich
+          samplePrepared,
+          { id: 'ollama' },
+          { mode: 'enrich' },
+        );
+
+        // Résultat : null (SKIP)
+        expect(result).toBeNull();
+
+        // Le threshold check fire EN PREMIER → reason='below-threshold'
+        expect(traceOptimizer).toHaveBeenCalledWith(
+          'optimizeResponse SKIP',
+          expect.objectContaining({ reason: 'below-threshold' }),
+        );
+
+        // Le guard enrich ne fire PAS (précedence) → no-prepared-prompt absent
+        expect(traceOptimizer).not.toHaveBeenCalledWith(
+          'optimizeResponse SKIP',
+          expect.objectContaining({ reason: 'no-prepared-prompt' }),
+        );
+
+        // L'API LLM n'est jamais appelée (court-circuit)
+        expect(chatCompletion).not.toHaveBeenCalled();
+      });
     });
   });
 

@@ -24,6 +24,7 @@ import { getPreset, getAllPresets } from './providerLoader.js';
 import { renderMarkdown, renderStreamingMarkdown } from './markdownRenderer.js';
 import { PromptEngine, hashContext, DEFAULT_OPTIMIZATION_THRESHOLD } from './promptEngine.js';
 import { estimateTokens } from './chatHistory.js';
+import { traceChat } from './traceLogger.js';
 
 /* ---------- Provider Greek names ---------- */
 
@@ -612,7 +613,21 @@ function handleChatBodyClick(e) {
 async function sendMessage(text, options = {}) {
   const { skipUserMessage = false } = options;
 
-  if (!text.trim() || isThinking || isOptimizing) return;
+  // [CHAT] Trace ENTRY — début de sendMessage()
+  traceChat('sendMessage ENTRY', {
+    text: text.slice(0, 80),
+    skipUserMessage,
+    isThinking,
+    isOptimizing,
+    hasProvider: !!getState().assistant?.provider?.id,
+  });
+
+  if (!text.trim() || isThinking || isOptimizing) {
+    traceChat('sendMessage SKIP', {
+      reason: !text.trim() ? 'empty' : isThinking ? 'thinking' : 'optimizing',
+    });
+    return;
+  }
 
   const provider = getState().assistant?.provider;
   if (!provider?.id) {
@@ -626,11 +641,23 @@ async function sendMessage(text, options = {}) {
     actions.pushChatMessage({ role: 'user', content: text, timestamp: Date.now() });
     setInputValue('');
 
+    // [CHAT] Trace user message pushed
+    traceChat('user message pushed', { textLen: text.length, timestamp: Date.now() });
+
     // Préparer le prompt via PromptEngine
     try {
       const graph = { nodes: getState().nodes, edges: getState().edges };
       const prepared = await promptEngine.preparePrompt(text, graph);
       actions.setCurrentPrompt(prepared);
+
+      // [CHAT] Trace promptEngine prepared
+      traceChat('promptEngine prepared', {
+        preparedId: prepared.id,
+        type: prepared.type,
+        cached: prepared.cached,
+        apiEnhanced: prepared.apiEnhanced,
+        tokenCount: estimateTokens(prepared.prompt),
+      });
 
       // Afficher la section prompt dans le DOM
       renderPromptSection(prepared);
@@ -666,11 +693,29 @@ async function sendMessage(text, options = {}) {
       { role: 'user', content: text },
     ];
 
+    // [CHAT] Trace streamChatCompletion CALL
+    traceChat('streamChatCompletion CALL', {
+      provider: provider.id,
+      model: provider.model,
+      messagesLen: allMessages.length,
+      hasCustomPrompt: !!customPrompt,
+    });
+
     // Appel API en streaming
     await streamChatCompletion(provider, trimHistory(allMessages), {
       onToken(token) {
         streamedContent += token;
         streamTokenCount++;
+
+        // [CHAT] Trace onToken — throttled 1/10 pour éviter de saturer la console
+        if (streamTokenCount % 10 === 0) {
+          traceChat('onToken', {
+            tokenLen: token.length,
+            cumLen: streamedContent.length,
+            tokenCount: streamTokenCount,
+            preview: token.slice(0, 40),
+          });
+        }
 
         // Typewriter (10ms) : ajouter les nouveaux caractères en texte échappé
         if (!typewriterTimer) {
@@ -702,8 +747,18 @@ async function sendMessage(text, options = {}) {
         finalizeStreamingBubble(streamingBubble, streamedContent);
         actions.pushChatMessage({ role: 'assistant', content: streamedContent, timestamp: Date.now() });
         scrollToBottom();
+        // [CHAT] Trace onDone — fin du streaming
+        traceChat('onDone', {
+          streamedContentLen: streamedContent.length,
+          tokenCount: streamTokenCount,
+        });
       },
       onError(err) {
+        // [CHAT] Trace onError — erreur pendant streaming
+        traceChat('onError', {
+          errorMsg: err?.message?.slice(0, 200),
+          hasPartialContent: streamedContent.length > 0,
+        });
         // Si on a déjà du contenu partielle, on le garde
         if (streamedContent) {
           finalizeStreamingBubble(streamingBubble, streamedContent);
@@ -721,12 +776,25 @@ async function sendMessage(text, options = {}) {
     if (!skipUserMessage && streamedContent && !isOptimizing) {
       const tokenCount = estimateTokens(streamedContent);
       const threshold = getState().assistant?.optimizationThreshold || DEFAULT_OPTIMIZATION_THRESHOLD;
+      // [CHAT] Trace optimizeLastResponse CALL — toujours émis, willOptimize indique si déclenché
+      traceChat('optimizeLastResponse CALL', {
+        responseLen: streamedContent.length,
+        tokenCount,
+        threshold,
+        willOptimize: tokenCount > threshold,
+      });
       if (tokenCount > threshold) {
         await optimizeLastResponse(streamingBubble, streamedContent);
       }
     }
 
   } catch (error) {
+    // [CHAT] Trace CATCH error — erreur dans sendMessage
+    traceChat('CATCH error', {
+      errorName: error.name,
+      errorMsg: error.message?.slice(0, 200),
+      hasPartialContent: streamedContent.length > 0,
+    });
     // Annulation volontaire
     if (error.name === 'AbortError') {
       if (streamedContent) {
@@ -755,6 +823,11 @@ async function sendMessage(text, options = {}) {
     showThinkingIndicator(false);
     showStopButton(false);
     scrollToBottom();
+    // [CHAT] Trace FINALLY — fin de sendMessage
+    traceChat('FINALLY', {
+      streamedContentLen: streamedContent.length,
+      isThinking: false,
+    });
   }
 }
 
@@ -874,6 +947,11 @@ function createStreamingBubble() {
   displayedLength = 0;
   msgDiv.className = 'chat-msg chat-msg--assistant chat-msg--streaming';
   msgDiv.innerHTML = `<div class="chat-msg__bubble"><span class="chat-streaming-cursor"></span></div>`;
+  // [CHAT] Trace createStreamingBubble — création de la bulle de streaming
+  traceChat('createStreamingBubble', {
+    className: msgDiv.className,
+    hasExistingStreaming: !!body.querySelector('.chat-msg--streaming'),
+  });
 
   if (typingEl) {
     body.insertBefore(msgDiv, typingEl);
@@ -1226,13 +1304,30 @@ async function handleRepreparePrompt() {
  * @param {string} originalContent - Contenu original de la réponse
  */
 async function optimizeLastResponse(bubble, originalContent) {
-  if (!bubble || !originalContent || isOptimizing) return;
+  const threshold = getState().assistant?.optimizationThreshold || DEFAULT_OPTIMIZATION_THRESHOLD;
+  const tokenCount = estimateTokens(originalContent);
+  // [CHAT] Trace optimizeLastResponse CALL — entrée post-optimisation
+  traceChat('optimizeLastResponse CALL', {
+    responseLen: originalContent.length,
+    tokenCount,
+    threshold,
+    willOptimize: tokenCount > threshold,
+  });
+  if (!bubble || !originalContent || isOptimizing) {
+    traceChat('optimizeLastResponse SKIP', {
+      reason: !bubble ? 'no-bubble' : !originalContent ? 'empty' : 'already-optimizing',
+    });
+    return;
+  }
 
   isOptimizing = true;
+  // [CHAT] Trace isOptimizing LOCK — début optimisation
+  traceChat('isOptimizing LOCK', { reason: 'start', isOptimizing: true });
   const provider = getState().assistant?.provider;
   const preparedPrompt = promptEngine?.getCurrentPrompt();
 
   if (!provider?.id || !preparedPrompt) {
+    traceChat('optimizeLastResponse SKIP', { reason: 'no-prompt' });
     isOptimizing = false;
     return;
   }
@@ -1255,24 +1350,40 @@ async function optimizeLastResponse(bubble, originalContent) {
       actions.pushChatMessage({ role: 'assistant', content: optimized, timestamp: Date.now() });
 
       // Badge succès
+      const originalTokens = estimateTokens(originalContent);
+      const optimizedTokens = estimateTokens(optimized);
+      const compressionRatio = Math.round((1 - optimized.length / originalContent.length) * 100);
+      // [CHAT] Trace optimizeLastResponse BADGE done — optimisation réussie
+      traceChat('optimizeLastResponse BADGE done', {
+        originalTokens,
+        optimizedTokens,
+        compressionRatio,
+      });
       showOptimizationBadge(bubble, 'done');
 
       // Mettre à jour les stats d'optimisation cumulées
-      const originalTokens = estimateTokens(originalContent);
-      const optimizedTokens = estimateTokens(optimized);
       const tokensSaved = Math.max(0, originalTokens - optimizedTokens);
       if (tokensSaved > 0) {
         actions.updateOptimizationStats(tokensSaved, originalTokens);
       }
     } else {
+      // [CHAT] Trace optimizeLastResponse BADGE no-change — optimisation sans changement
+      traceChat('optimizeLastResponse BADGE no-change', {
+        originalTokens: tokenCount,
+        optimizedTokens: estimateTokens(optimized || ''),
+      });
       // Optimisation sans changement — badge discret
       showOptimizationBadge(bubble, 'no-change');
     }
   } catch (err) {
     console.warn('[Chat] Échec optimisation:', err.message);
+    // [CHAT] Trace optimizeLastResponse BADGE failed — échec optimisation
+    traceChat('optimizeLastResponse BADGE failed', { errorMsg: err.message?.slice(0, 200) });
     showOptimizationBadge(bubble, 'failed');
   } finally {
     isOptimizing = false;
+    // [CHAT] Trace isOptimizing LOCK — fin optimisation
+    traceChat('isOptimizing LOCK', { reason: 'end', isOptimizing: false });
   }
 }
 

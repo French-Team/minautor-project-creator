@@ -15,6 +15,7 @@
 import { getCategory } from './providerLoader.js';
 import { getNextApiKey, resetRotationIndex, getApiKeyForEnvKey } from './envLoader.js';
 import { toast } from './toast.js';
+import { traceAiClient } from './traceLogger.js';
 
 /**
  * Convertit une URL de provider local en URL proxy pour éviter CORS.
@@ -91,6 +92,7 @@ export function toLocalUrl(url, providerId) {
  * @returns {string} URL complète de l'endpoint
  */
 export function buildEndpointUrl(provider) {
+  let endpoint;
   if (provider.id === 'gemini') {
     // Gemini API retourne des model IDs avec "models/" prefix (ex: "models/gemini-2.0-flash")
     // On le retire pour éviter "models/models/..." dans l'URL
@@ -98,15 +100,22 @@ export function buildEndpointUrl(provider) {
     if (modelId.startsWith('models/')) {
       modelId = modelId.replace('models/', '');
     }
-    return `${provider.baseUrl}/models/${modelId}:generateContent?key=${provider.apiKey}`;
-  }
-  if (provider.id === 'opencode-zen') {
+    endpoint = `${provider.baseUrl}/models/${modelId}:generateContent?key=${provider.apiKey}`;
+  } else if (provider.id === 'opencode-zen') {
     // OpenCode Zen : utiliser le format détecté previously ou /responses par défaut
     // modelMeta.requestFormat peut être 'openai' ou 'anthropic'
     const format = provider.modelMeta?.requestFormat || 'openai';
-    return `${provider.baseUrl}/${format === 'anthropic' ? 'messages' : 'responses'}`;
+    endpoint = `${provider.baseUrl}/${format === 'anthropic' ? 'messages' : 'responses'}`;
+  } else {
+    endpoint = `${provider.baseUrl}/chat/completions`;
   }
-  return `${provider.baseUrl}/chat/completions`;
+  traceAiClient('buildEndpointUrl', {
+    providerId: provider.id,
+    baseUrl: provider.baseUrl,
+    model: provider.model,
+    endpoint,
+  });
+  return endpoint;
 }
 
 /**
@@ -166,13 +175,19 @@ export function formatGeminiRequest(messages, model, temperature, maxTokens) {
 export function parseGeminiResponse(data) {
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   const usage = data.usageMetadata || {};
-  return {
+  const result = {
     content: text,
     usage: {
       promptTokens: usage.promptTokenCount || 0,
       completionTokens: usage.candidatesTokenCount || 0,
     },
   };
+  traceAiClient('parseOpenAIResponse', {
+    format: 'gemini',
+    contentLen: text.length,
+    usage: result.usage,
+  });
+  return result;
 }
 
 /**
@@ -184,31 +199,95 @@ export function parseGeminiResponse(data) {
  * @param {Object} modelMeta - Métadonnées du modèle (non utilisé, gardé pour compatibilité)
  * @returns {{ content: string, usage: { promptTokens: number, completionTokens: number } }}
  */
-function parseOpenAIResponse(data, providerId = '', modelMeta = null) {
+export function parseOpenAIResponse(data, providerId = '', modelMeta = null) {
   // Essayer OpenAI d'abord (format le plus courant): { choices: [{ message: { content: "..." } }] }
   if (data.choices?.[0]) {
     const choice = data.choices[0];
-    return {
-      content: choice.message?.content || choice.text || '',
+    const content = choice.message?.content || choice.text || '';
+    const result = {
+      content,
       usage: {
         promptTokens: data.usage?.prompt_tokens || 0,
         completionTokens: data.usage?.completion_tokens || 0,
       },
     };
+    traceAiClient('parseOpenAIResponse', {
+      format: 'openai',
+      contentLen: content.length,
+      usage: result.usage,
+    });
+    return result;
   }
   
-  // Fallback Anthropic/OpenCode Zen: { output: "..." } or { output: { content: "..." } }
+  // Fallback Anthropic/OpenCode Zen:
+  //   { output: "..." }                                              (string simple)
+  //   { output: { content: "..." } }                                 (objet content)
+  //   { output: [{ type: "message", content: [{ type, text }] }] }   (array d'items)
   if (data.output !== undefined) {
-    return {
+    // Détection output vide : OpenCode Zen renvoie parfois { output: [], stop_reason: "max_output_tokens" }
+    // quand le modèle ne génère aucun token (prompt trop vague, quota épuisé, etc.).
+    // Sans cette vérif, on retournait content='' silencieusement, ce qui causait
+    // des timeouts E2E (la chatPanel attendait un texte non-vide qui n'arrivait jamais).
+    if (Array.isArray(data.output) && data.output.length === 0) {
+      const stopReason = data.stop_reason || data.stopReason || 'inconnu';
+      throw new Error(
+        `Modèle a renvoyé output vide (stop_reason: ${stopReason}). ` +
+        `Le prompt est peut-être trop vague, le modèle ne supporte pas la requête, ` +
+        `ou le quota est épuisé. (usage: ${JSON.stringify(data.usage || {})})`,
+      );
+    }
+
+    // Format array d'items (OpenCode Zen /responses non-streaming) :
+    //   { output: [{ type: "reasoning", summary: [...] },
+    //              { type: "message",    content: [{ type: "output_text", text: "..." }] }] }
+    // → on filtre les items `type === 'message'` et on concatène les `.text` de leurs content[]
+    if (Array.isArray(data.output)) {
+      const textParts = [];
+      for (const item of data.output) {
+        if (!item || typeof item !== 'object') continue;
+        // Item "message" standard
+        if (item.type === 'message' && Array.isArray(item.content)) {
+          for (const part of item.content) {
+            if (typeof part?.text === 'string') textParts.push(part.text);
+          }
+        }
+        // Au cas où l'item est directement { type, text } (variante)
+        else if (typeof item.text === 'string' && item.type !== 'function_call') {
+          textParts.push(item.text);
+        }
+      }
+      return {
+        content: textParts.join(''),
+        // OpenCode Zen renvoie input_tokens/output_tokens (Anthropic-style)
+        // tandis qu'OpenAI renvoie prompt_tokens/completion_tokens.
+        // On lit les deux pour rester compatible.
+        usage: {
+          promptTokens: data.usage?.prompt_tokens ?? data.usage?.input_tokens ?? 0,
+          completionTokens: data.usage?.completion_tokens ?? data.usage?.output_tokens ?? 0,
+        },
+      };
+    }
+
+    const result = {
       content: typeof data.output === 'string' ? data.output : (data.output.content || ''),
       usage: {
-        promptTokens: data.usage?.prompt_tokens || 0,
-        completionTokens: data.usage?.completion_tokens || 0,
+        promptTokens: data.usage?.prompt_tokens ?? data.usage?.input_tokens ?? 0,
+        completionTokens: data.usage?.completion_tokens ?? data.usage?.output_tokens ?? 0,
       },
     };
+    traceAiClient('parseOpenAIResponse', {
+      format: 'opencode-zen-string',
+      contentLen: result.content.length,
+      usage: result.usage,
+    });
+    return result;
   }
-  
+
   // Aucun format recognized
+  traceAiClient('parseOpenAIResponse ERROR', {
+    keys: Object.keys(data || {}),
+    errorMsg: 'Format inconnu (ni choices ni output)',
+  });
   throw new Error(`Réponse API invalide: ni choices ni output. Format: ${JSON.stringify(Object.keys(data || {}))}`);
 }
 
@@ -291,9 +370,23 @@ function isTimeoutError(err) {
  */
 export async function chatCompletion(provider, messages, options = {}) {
   const { maxRetries = 3, noRotation = false, onFormatDetected = null } = options;
+  const t0 = Date.now();
+
+  traceAiClient('chatCompletion ENTRY', {
+    providerId: provider.id,
+    model: provider.model,
+    messagesLen: messages.length,
+    hasApiKey: !!provider.apiKey,
+    maxRetries,
+    requestFormat: provider.modelMeta?.requestFormat || 'openai',
+  });
 
   let url = buildEndpointUrl(provider);
   url = toLocalUrl(url, provider.id);
+  traceAiClient('chatCompletion URL', {
+    url,
+    isProxified: url.startsWith('/local-api/'),
+  });
 
   let headers = { 'Content-Type': 'application/json' };
   let body;
@@ -316,68 +409,113 @@ export async function chatCompletion(provider, messages, options = {}) {
     parseResponse = parseOpenAIResponse;
   }
 
+  traceAiClient('chatCompletion bodyBuilt', {
+    bodyLen: JSON.stringify(body).length,
+    requestFormat,
+    model: provider.model,
+    hasSystemMsg: !!messages.find((m) => m.role === 'system'),
+  });
+
   let lastError;
   let lastStatus = null; // Dernier HTTP status pour détection 429
   let retries = 0;
   let formatRetryDone = false; // Pour éviter double retry
 
   while (retries <= maxRetries) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(30000), // 30s timeout pour requête
-      });
+      try {
+        // Déclarer errorMsg en tête de try pour qu'il soit initialisé avant
+        // tous les usages (429, 401, format-retry, throw final). Le `var`
+        // remonte au function scope, mais l'assignation doit être faite ici
+        // pour éviter `errorMsg is undefined` si la première erreur n'est pas
+        // un 429 (ex: 401 direct).
+        var errorMsg = '';
+        traceAiClient('chatCompletion fetch CALL', {
+          url,
+          bodyLen: JSON.stringify(body).length,
+          timeoutMs: 30000,
+        });
+        const response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(30000), // 30s timeout pour requête
+        });
 
-      if (response.ok) {
-        const data = await response.json();
-        // Notifier le format détecté si callback fourni
-        if (onFormatDetected && requestFormat !== (provider.modelMeta?.requestFormat || 'openai')) {
-          // Le format a été changé pendant cette requête
-          onFormatDetected(requestFormat);
+        if (response.ok) {
+          traceAiClient('chatCompletion fetch OK', {
+            status: response.status,
+            durationMs: Date.now() - t0,
+          });
+          const data = await response.json();
+          // Notifier le format détecté si callback fourni
+          if (onFormatDetected && requestFormat !== (provider.modelMeta?.requestFormat || 'openai')) {
+            // Le format a été changé pendant cette requête
+            onFormatDetected(requestFormat);
+          }
+          // Succès — notifier si on a fait des retries
+          if (retries > 0) {
+            toast.success(`✅ Succès après ${retries} rotation(s)`, { duration: 3000 });
+          }
+          const parsed = parseResponse(data, provider.id, provider.modelMeta);
+          traceAiClient('chatCompletion SUCCESS', {
+            contentLen: parsed.content?.length || 0,
+            usage: parsed.usage,
+            detectedFormat: provider.id === 'gemini' ? 'gemini' : requestFormat,
+            attempts: retries + 1,
+          });
+          return parsed;
         }
-        // Succès — notifier si on a fait des retries
-        if (retries > 0) {
-          toast.success(`✅ Succès après ${retries} rotation(s)`, { duration: 3000 });
-        }
-        return parseResponse(data, provider.id, provider.modelMeta);
-      }
 
       // Erreur 429 = Rate limit → rotation de clé
       if (response.status === 429 && !noRotation) {
         lastStatus = 429;
         const errorData = await response.json().catch(() => ({}));
-        const errorMsg = errorData.error?.message || errorData.message || 'Rate limit exceeded';
+        // errorMsg déjà déclarée en tête de try block (var function-scope)
+        errorMsg = errorData.error?.message || errorData.message || 'Rate limit exceeded';
         console.warn('[aiClient] Corps de la 429:', JSON.stringify(errorData).slice(0, 500));
         
         // Essayer de trouver une autre clé
         if (provider.envKey) {
-          const nextKey = getNextApiKey(provider.envKey);
-          if (nextKey) {
-            console.warn(`[aiClient] Rate limit (429), rotation vers ${nextKey.key}`);
-            toast.warning(`⚡ Rate limit — rotation vers ${nextKey.key} (tentative ${retries + 1}/${maxRetries + 1})`, { duration: 4000 });
-            apiKey = nextKey.value;
-            if (provider.id === 'gemini') {
-              // Reconstruire l'URL avec la nouvelle clé
-              url = buildEndpointUrl({ ...provider, apiKey });
-              url = toLocalUrl(url, provider.id);
-            } else {
-              headers['Authorization'] = `Bearer ${apiKey}`;
+            const nextKey = getNextApiKey(provider.envKey);
+            if (nextKey) {
+              traceAiClient('chatCompletion keyRotation', {
+                envKey: provider.envKey,
+                fromKey: apiKey ? apiKey.slice(0, 8) + '...' : 'none',
+                toKey: nextKey.key,
+                reason: '429',
+              });
+              console.warn(`[aiClient] Rate limit (429), rotation vers ${nextKey.key}`);
+              toast.warning(`⚡ Rate limit — rotation vers ${nextKey.key} (tentative ${retries + 1}/${maxRetries + 1})`, { duration: 4000 });
+              apiKey = nextKey.value;
+              if (provider.id === 'gemini') {
+                // Reconstruire l'URL avec la nouvelle clé
+                url = buildEndpointUrl({ ...provider, apiKey });
+                url = toLocalUrl(url, provider.id);
+              } else {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+              }
+              retries++;
+              // NE PAS reset l'index ici ! La rotation doit continuer vers la prochaine clé
+              continue;
             }
-            retries++;
-            // NE PAS reset l'index ici ! La rotation doit continuer vers la prochaine clé
-            continue;
           }
+          traceAiClient('chatCompletion keyExhausted', {
+            envKey: provider.envKey,
+            attempts: retries + 1,
+          });
+          toast.error('🚫 Rate limit — aucune clé de rotation disponible');
+          throw new Error(`${errorMsg} (429 Rate Limit - aucune clé de rotation disponible)`);
         }
-        toast.error('🚫 Rate limit — aucune clé de rotation disponible');
-        throw new Error(`${errorMsg} (429 Rate Limit - aucune clé de rotation disponible)`);
-      }
+
+        traceAiClient('chatCompletion fetch 429', {
+          status: response.status,
+          errorMsg: errorMsg.slice(0, 200),
+        });
 
       // Erreur de format incompatible → retry avec l'autre format (OpenCode Zen seulement)
       // On fait ce check AVANT la rotation 401 pour les erreurs de format
       lastStatus = response.status;
-      let errorMsg = `Erreur HTTP ${response.status}`;
+      // Note: errorMsg est déjà déclarée plus haut (dans le bloc 429) — pas de re-déclaration ici
       try {
         const errorData = await response.json();
         errorMsg = errorData.error?.message || errorData.message || errorMsg;
@@ -386,10 +524,15 @@ export async function chatCompletion(provider, messages, options = {}) {
       }
 
       // Pour OpenCode Zen avec format 'openai', si erreur de format, retry avec 'anthropic'
-      if (provider.id === 'opencode-zen' && 
-          requestFormat === 'openai' && 
-          !formatRetryDone && 
+      if (provider.id === 'opencode-zen' &&
+          requestFormat === 'openai' &&
+          !formatRetryDone &&
           isFormatIncompatibleError(response.status, errorMsg)) {
+        traceAiClient('chatCompletion formatRetry', {
+          fromFormat: 'openai',
+          toFormat: 'anthropic',
+          reason: errorMsg.slice(0, 100),
+        });
         console.warn(`[aiClient] Format OpenAI non supporté (${errorMsg}), retry avec Anthropic...`);
         toast.warning(`🔄 Format non supporté — tentative avec format Anthropic`, { duration: 4000 });
         
@@ -404,9 +547,27 @@ export async function chatCompletion(provider, messages, options = {}) {
         continue;
       }
 
+      // Classifier l'erreur HTTP
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        traceAiClient('chatCompletion fetch 4xx', {
+          status: response.status,
+          errorMsg: errorMsg.slice(0, 200),
+        });
+      } else if (response.status >= 500) {
+        traceAiClient('chatCompletion fetch 5xx', {
+          status: response.status,
+          errorMsg: errorMsg.slice(0, 200),
+        });
+      }
+
       // Erreur 401 Unauthorized → pour OpenCode Zen, on fait une rotation de clé
       // (seulement si ce n'est pas une erreur de format, car on a déjà fait le format retry ci-dessus)
       if (response.status === 401 && provider.envKey) {
+        // errorMsg vient d'être parsée plus haut (bloc 429 ou bloc format retry)
+        // Si errorMsg est undefined (cas 401 direct), on la construit ici
+        if (typeof errorMsg === 'undefined') {
+          errorMsg = `Erreur HTTP 401`;
+        }
         // Vérifier si c'est une erreur de quota gratuit épuisé (OpenCode Zen)
         const isQuotaError = isFreeQuotaExhaustedError(errorMsg);
         
@@ -429,6 +590,13 @@ export async function chatCompletion(provider, messages, options = {}) {
         
         const nextKey = getNextApiKey(provider.envKey);
         if (nextKey) {
+          traceAiClient('chatCompletion keyRotation', {
+            envKey: provider.envKey,
+            fromKey: apiKey ? apiKey.slice(0, 8) + '...' : 'none',
+            toKey: nextKey.key,
+            reason: '401',
+            isQuotaError,
+          });
           if (isQuotaError) {
             console.warn(`[aiClient] Quota gratuit épuisé (401), rotation vers ${nextKey.key}`);
             toast.warning(`🎁 Quota gratuit épuisé — rotation vers ${nextKey.key}`, { duration: 4000 });
@@ -447,6 +615,10 @@ export async function chatCompletion(provider, messages, options = {}) {
           continue;
         }
         // Pas d'autre clé disponible
+        traceAiClient('chatCompletion keyExhausted', {
+          envKey: provider.envKey,
+          attempts: retries + 1,
+        });
         toast.error(`🔑 Erreur 401 — aucune clé de rotation disponible`);
         throw new Error(errorMsg);
       }
@@ -464,11 +636,17 @@ export async function chatCompletion(provider, messages, options = {}) {
 
     } catch (err) {
       lastError = err;
-      
+
       // Timeout réseau → rotation de clé si disponible
       if (isTimeoutError(err) && provider.envKey) {
         const nextKey = getNextApiKey(provider.envKey);
         if (nextKey) {
+          traceAiClient('chatCompletion keyRotation', {
+            envKey: provider.envKey,
+            fromKey: apiKey ? apiKey.slice(0, 8) + '...' : 'none',
+            toKey: nextKey.key,
+            reason: 'timeout',
+          });
           console.warn(`[aiClient] Timeout réseau, rotation vers ${nextKey.key}`);
           toast.warning(`⏱️ Timeout — rotation vers ${nextKey.key} (tentative ${retries + 1}/${maxRetries + 1})`, { duration: 4000 });
           apiKey = nextKey.value;
@@ -486,11 +664,17 @@ export async function chatCompletion(provider, messages, options = {}) {
         toast.error('⏱️ Timeout — aucune clé de rotation disponible');
         throw new Error(`Timeout réseau — le modèle gratuit est souvent lent. Réessaie ou choisis un autre modèle. (aucune clé de rotation disponible)`);
       }
-      
+
       // Erreur 429 = Rate limit → rotation de clé (géré plus haut, mais au cas où)
       if (err.message.includes('429') && !noRotation && provider.envKey) {
         const nextKey = getNextApiKey(provider.envKey);
         if (nextKey) {
+          traceAiClient('chatCompletion keyRotation', {
+            envKey: provider.envKey,
+            fromKey: apiKey ? apiKey.slice(0, 8) + '...' : 'none',
+            toKey: nextKey.key,
+            reason: '429',
+          });
           console.warn(`[aiClient] Rate limit (429), rotation vers ${nextKey.key}`);
           toast.warning(`⚡ Rate limit détecté — rotation vers ${nextKey.key}`, { duration: 4000 });
           apiKey = nextKey.value;
@@ -508,9 +692,19 @@ export async function chatCompletion(provider, messages, options = {}) {
 
       // Erreur réseau ou autre - ne pas réessayer si max retries atteint
       if (retries >= maxRetries) {
+        traceAiClient('chatCompletion THROW', {
+          errorMsg: err.message?.slice(0, 200),
+          status: lastStatus,
+          attempts: retries + 1,
+        });
         throw err;
       }
-      
+
+      traceAiClient('chatCompletion THROW', {
+        errorMsg: err.message?.slice(0, 200),
+        status: lastStatus,
+        attempts: retries + 1,
+      });
       throw err;
     }
   }
@@ -541,8 +735,19 @@ export async function chatCompletion(provider, messages, options = {}) {
  * @returns {Promise<{ content: string, usage: { promptTokens: number, completionTokens: number } }>}
  */
 export async function streamChatCompletion(provider, messages, { onToken, onDone, onError }, signal) {
+  const t0 = Date.now();
+  traceAiClient('streamChatCompletion ENTRY', {
+    providerId: provider.id,
+    model: provider.model,
+    hasSignal: !!signal,
+  });
+
   // Gemini ne supporte pas le streaming SSE standard — fallback
   if (provider.id === 'gemini') {
+    traceAiClient('streamChatCompletion fallback gemini', {
+      providerId: provider.id,
+      reason: 'no-sse',
+    });
     const result = await chatCompletion(provider, messages);
     if (onToken) onToken(result.content);
     if (onDone) onDone();
@@ -552,10 +757,50 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
   // OpenCode Zen : les deux formats (responses/messages) utilisent des endpoints
   // non-standard non gérés par le parsing SSE. Fallback non-streaming vers
   // chatCompletion() qui gère la détection automatique du format.
+  //
+  // Émulation de streaming : onToken+onDone synchrones après un await unique
+  // empêchent le chatPanel de détecter la transition .chat-msg--streaming →
+  // .chat-msg--assistant (les timers typewriter 10ms et markdownSync 500ms
+  // sont cleared par onDone avant d'avoir pu tourner). On découpe donc le
+  // contenu en chunks et on les envoie séquentiellement avec un microtask
+  // break entre chaque, pour que les timers chatPanel tournent et que
+  // streamedContent soit complet au moment de onDone.
   if (provider.id === 'opencode-zen') {
+    traceAiClient('streamChatCompletion fallback opencode-zen', {
+      providerId: provider.id,
+      reason: 'no-sse',
+    });
     const result = await chatCompletion(provider, messages);
-    if (onToken) onToken(result.content);
+    const fullContent = result.content || '';
+    const CHUNK_SIZE = 20; // ~20 chars par chunk ≈ 1 typewriter timer (10ms)
+
+    let chunkCount = 0;
+    for (let i = 0; i < fullContent.length; i += CHUNK_SIZE) {
+      const chunk = fullContent.slice(i, i + CHUNK_SIZE);
+      chunkCount++;
+      if (chunkCount % 5 === 0) {
+        traceAiClient('streamChatCompletion chunk', {
+          chunkLen: chunk.length,
+          cumLen: Math.min(i + CHUNK_SIZE, fullContent.length),
+          chunkCount,
+          preview: chunk.slice(0, 40),
+        });
+      }
+      if (onToken) onToken(chunk);
+      // Microtask break : laisse les timers chatPanel (typewriter 10ms,
+      // markdownSync 500ms) et le MutationObserver se déclencher entre chunks.
+      // Garantit aussi que streamedContent += chunk est appliqué avant
+      // l'évaluation du tour de boucle suivant.
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
     if (onDone) onDone();
+    traceAiClient('streamChatCompletion DONE', {
+      contentLen: fullContent.length,
+      durationMs: Date.now() - t0,
+      chunkCount,
+    });
     return result;
   }
 
@@ -611,6 +856,7 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
   let fullContent = '';
   let usage = { promptTokens: 0, completionTokens: 0 };
   let finished = false;
+  let chunkCount = 0;
 
   try {
     while (true) {
@@ -641,6 +887,15 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
             const openaiDelta = chunk.choices?.[0]?.delta;
             if (openaiDelta?.content) {
               fullContent += openaiDelta.content;
+              chunkCount++;
+              if (chunkCount % 5 === 0) {
+                traceAiClient('streamChatCompletion chunk', {
+                  chunkLen: openaiDelta.content.length,
+                  cumLen: fullContent.length,
+                  chunkCount,
+                  preview: openaiDelta.content.slice(0, 40),
+                });
+              }
               if (onToken) onToken(openaiDelta.content);
               if (chunk.usage) {
                 usage = {
@@ -700,8 +955,17 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
     }
 
     if (!finished && onDone) onDone();
+    traceAiClient('streamChatCompletion DONE', {
+      contentLen: fullContent.length,
+      durationMs: Date.now() - t0,
+      chunkCount,
+    });
     return { content: fullContent, usage };
   } catch (err) {
+    traceAiClient('streamChatCompletion ERROR', {
+      errorMsg: err.message?.slice(0, 200),
+      hasPartialContent: fullContent.length > 0,
+    });
     if (!finished && onError) {
       onError(err);
       return { content: fullContent, usage };
@@ -724,7 +988,18 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
  * @returns {Promise<{ content: string, usage: { promptTokens: number, completionTokens: number } }>}
  */
 export async function fimCompletion(provider, prefix, suffix) {
-  if (provider.id !== 'mistral') {      throw new Error("FIM n'est supporté que par Mistral");
+  const t0 = Date.now();
+  traceAiClient('fimCompletion ENTRY', {
+    prefixLen: prefix.length,
+    suffixLen: suffix.length,
+    model: provider.model,
+  });
+  if (provider.id !== 'mistral') {
+    traceAiClient('fimCompletion FAILED', {
+      providerId: provider.id,
+      errorMsg: "FIM n'est supporté que par Mistral",
+    });
+    throw new Error("FIM n'est supporté que par Mistral");
   }
 
   const url = toLocalUrl(`${provider.baseUrl}/fim/completions`, provider.id);
@@ -751,17 +1026,27 @@ export async function fimCompletion(provider, prefix, suffix) {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
+    traceAiClient('fimCompletion FAILED', {
+      providerId: provider.id,
+      errorMsg: error.error?.message || `Erreur HTTP ${response.status}`,
+    });
     throw new Error(error.error?.message || `Erreur HTTP ${response.status}`);
   }
 
   const data = await response.json();
-  return {
+  const result = {
     content: data.choices[0].message?.content || data.choices[0].text || '',
     usage: {
       promptTokens: data.usage?.prompt_tokens || 0,
       completionTokens: data.usage?.completion_tokens || 0,
     },
   };
+  traceAiClient('fimCompletion SUCCESS', {
+    contentLen: result.content.length,
+    usage: result.usage,
+    durationMs: Date.now() - t0,
+  });
+  return result;
 }
 
 /**

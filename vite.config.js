@@ -60,6 +60,12 @@ export default defineConfig({
         target: 'http://localhost:3001',
         changeOrigin: true,
       },
+      // Proxy prompts (PromptEngine._writeToFile fait un POST /api/prompts
+      // pour persister chaque prompt préparé dans data/prompts/)
+      '/api/prompts': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
     },
   },
   preview: {

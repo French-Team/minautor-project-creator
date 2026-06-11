@@ -2,6 +2,10 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  // Ignorer les specs de diagnostic one-shot stockés dans e2e/_debug/
+  // (cf. .dev-plans/chat-trace-spec.md §7.2 — utiliser `git restore` ou
+  // re-créer le spec si besoin de re-diagnostiquer)
+  testIgnore: ['e2e/_debug/**'],
   // Timeout étendu à 60s pour les tests d'intégration providers (cf. .dev-plans/providers-e2e-spec.md)
   timeout: 60_000,
   // Timeout par expect() un peu plus long pour les providers lents (Gemini, OpenCode cold start)

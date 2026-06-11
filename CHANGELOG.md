@@ -13,7 +13,7 @@ et le projet adhère au [Semantic Versioning](https://semver.org/lang/fr/).
 ## [Non publié]
 
 ### ✨ Ajouté (Sprint A — E2E providers)
-- **Helper partagé** `e2e/helpers/providerTest.js` : exports `REQUIRED_KEYS` (mapping provider → var env), `PROVIDER_MODELS` (table validée par l'UI juin 2026), `skipIfNoKey()`, `setupProvider()`, `openChatRobust()`, `sendSmokeMessage()`, `lastAssistantHasMarkdown()`, `sampleStreamingLength()`
+- **Helper partagé** `e2e/helpers/providerTest.js` : exports `REQUIRED_KEYS` (mapping provider → var env), `PROVIDER_MODELS` (table validée par l'UI juin 2026), `skipIfNoKey()`, `setupProvider()`, `openChatRobust()`, `sendSmokeMessage()`, `lastAssistantHasMarkdown()`, `sampleStreamingLength()`, `sendSmokeMessageWithAbort()` (abort 20s pour slow streaming)
 - **Spec pilote** `e2e/providers/ollama.spec.js` (4 tests `@slow`) : setProvider + config par défaut, chat completion, streaming progressif, format markdown rendu. Skip gracieux si ollama non démarré.
 - **`playwright.config.js`** : `timeout: 60_000` (au lieu de 30s), `expect: { timeout: 10_000 }`, bloc `metadata` (slowMarker, lien vers spec). Permet les tests d'intégration providers sans flaky timeouts.
 - **`e2e/README.md`** : doc complète (structure, setup `.env`, marqueur `@slow`, lancement PR rapide vs nightly, template par provider, dépannage, métriques attendues)
@@ -26,7 +26,7 @@ et le projet adhère au [Semantic Versioning](https://semver.org/lang/fr/).
   - `kilo` → `nvidia/nemotron-3-super-120b-a12b:free`
   - `ollama` → `lfm2.5:latest`
   - `lmstudio` → `qwen/qwen3.5-9b`
-- **Spec planification** `.dev-plans/providers-e2e-spec.md` (Sprint A → ✅, B 🟡, C 🔴) : 11 sections, ~500 lignes, helper + 1 fichier par provider + vraies clés `.env` + skip gracieux
+- **Spec planification** `.dev-plans/providers-e2e-spec.md` (Sprint A → ✅, B ✅, C 🔶) : 11 sections, ~500 lignes, helper + 1 fichier par provider + vraies clés `.env` + skip gracieux
 - Index mis à jour : `.dev-plans/README.md` 12 → 13 specs, nouvelle section §7 « Tests E2E providers »
 
 ### Modifié
@@ -43,11 +43,75 @@ et le projet adhère au [Semantic Versioning](https://semver.org/lang/fr/).
 - **Concurrency** : 1 run nightly à la fois (`cancel-in-progress: true` pour éviter les chevauchements)
 - **Timeout** : 30 min par job (suffisant pour 8 providers × 4 tests × ~10s)
 
-### 🟡 Sprint B (à venir)
-- 4 fichiers `e2e/providers/{openrouter, groq, mistral, kilo}.spec.js` à créer
+### ✅ Sprint B (terminé 2026-06-10)
+- 4 fichiers `e2e/providers/{openrouter, groq, mistral, kilo}.spec.js` créés (4 tests `@slow` chacun)
 - Tous partagent le format OpenAI streaming → gain de productivité ~3x vs formats custom
 - Modèles validés par l'UI : `qwen/qwen3.5-9b`, `groq/compound`, `codestral-latest`, `nvidia/nemotron-3-super-120b-a12b:free`
-- Estimation : 1j de travail
+- **`sendSmokeMessageWithAbort(page, options)`** : helper dédié aux providers slow streaming (kilo) — patch `window.fetch` avec `AbortController`, poll contenu 500ms, abort après `noContentAbortMs` (défaut 20s), accepte réponse partielle comme succès
+- **Table `SLOW_STREAMING_OVERRIDES`** dans `_validation.spec.js` configurée pour kilo (20s/30s) et opencode-zen (45s/60s)
+
+### 🔶 Sprint C (gemini + opencode-zen terminés, lmstudio restant)
+- **`e2e/providers/gemini.spec.js`** (4 tests `@slow`) : config + chat REST natif + non-streaming vérif (URL `generativelanguage.googleapis.com`, `?key=` query) + markdown
+- **`e2e/providers/opencode-zen.spec.js`** (4 tests `@slow`) : config + chat dual-format + endpoint check (`/responses` OU `/messages`, **jamais** `/chat/completions`) + markdown
+- **`e2e/providers/lmstudio.spec.js`** (4 tests `@slow`) : config + chat + streaming + markdown ; **assertions assouplies** (test 2 `length > 0` au lieu de `toContain('ok')` car modèle local `qwen/qwen3.5-9b` est conversationnel ; test 3 `lenFinal > 0` au lieu de `monotonic >= 3` car LM Studio local répond quasi-instantanément sans progression observable)
+- **🛠️ Fix majeur `parseOpenAIResponse`** (3 nouveaux formats supportés) :
+  1. **Format array** `output: [{ type: "message", content: [{ type: "output_text", text: "..." }] }]` (OpenCode Zen /responses non-streaming) : itère sur les items, filtre `type === 'message'`, concatène les `.text` de leurs `content[]`
+  2. **Détection output vide** : throw explicite `output: []` + `stop_reason` (au lieu de retourner `content: ''` silencieusement) — résout les timeouts E2E silencieux
+  3. **Mapping usage Anthropic-style** : `input_tokens` / `output_tokens` mappés sur `promptTokens` / `completionTokens` (compatibilité OpenAI + OpenCode Zen)
+- **🛠️ `streamChatCompletion` opencode-zen fallback** : émulation de streaming par chunks de 20 chars avec `await new Promise(setTimeout, 0)` entre chaque — résout le bug de transition `.chat-msg--streaming` → `.chat-msg--assistant` non détectée
+- **🛠️ `vite.config.js`** : proxy manquant `/api/prompts` ajouté (corrige `ERR_ABORTED` sur PromptEngine)
+- **🧪 Tests unitaires ajoutés** dans `aiClient.test.js` (5 nouveaux) : array format basique, concaténation multi-messages, ignore non-message, deepseek reasoning style avec `input_tokens`/`output_tokens`, content hétérogène (text + refusal + image)
+- **🔧 Helper local `forceOpenAIFormat(page)`** dans opencode-zen spec : pré-set `requestFormat: 'openai'` dans `modelMeta` pour skip le format-retry (sinon latence ×2)
+- **Validation** : `npx vitest run` → 392/392 tests passent (0 régression), `e2e/providers/opencode-zen.spec.js` → 4/4 ✅ en 37.6s, `e2e/providers/lmstudio.spec.js` → 4/4 ✅ en 23s
+- **Suite complète Sprint A/B/C** : 42 ✅ / 6 ⏭️ / 1 ❌ (openrouter test 4 markdown, prompt à rendre plus directif) — **7/8 providers testés en E2E** (ollama, lmstudio, openrouter, groq, mistral, kilo, gemini, opencode-zen)
+
+### 🔧 Instrumentation temporaire (debug, à nettoyer)
+- `console.log('[TRACE-OCZ-CHUNK]')` gated par `window.__TRACE_OCZ_CHUNK` dans `aiClient.js` (log de chaque chunk de streaming + moment de `onDone`)
+- `console.log('[TRACE-OPENCODE]')` gated par `window.__TRACE_OPENCODE_ZEN` dans `chatPanel.js` (log de chaque étape `sendMessage`)
+- Gated par flags `window.__TRACE_*` donc inoffensifs en production, à retirer quand le bug est entièrement résolu
+
+### 📐 Spec — chat-trace-spec v1.2 (traçabilité end-to-end)
+- **Spec planification** `.dev-plans/chat-trace-spec.md` v1.0 → v1.2 : traçabilité de bout en bout du flot utilisateur (saisie → rendu DOM) directement dans la console DevTools
+- **5 fichiers ciblés** (au lieu de 3 initialement) : `chatPanel.js`, `promptEngine.js`, `optimizeResponse.js`, **`aiClient.js`**, **`systemPrompt.js`**
+- **5 helpers de traçage** centralisés dans `src/code-city/ai/traceLogger.js` (à créer) : `traceChat`, `tracePromptEngine`, `traceOptimizer`, `traceAiClient`, `traceSystemPrompt` — préfixes `[CHAT]`, `[PROMPT-ENGINE]`, `[OPTIMIZER]`, `[AI-CLIENT]`, `[SYSTEM-PROMPT]`
+- **Activation build-time** via `VITE_CHAT_DEBUG=true` (dev) / `false` (prod) → dead-code-eliminated en prod par Vite/Rollup, **aucune fuite de logs en production**
+- **Format mixte** : `console.log` court (ligne d'événement) + `console.groupCollapsed()` collapsibles avec détails (event, data, time)
+- **Ring buffer** `window.__CHAT_LOG_BUFFER` (500 entrées max FIFO) accessible depuis DevTools (`copy(window.__CHAT_LOG_BUFFER)`)
+- **Timestamps relatifs** `[+${elapsed}ms]` depuis `t0` (chargement du module)
+- **Sections ajoutées en v1.2** :
+  - **§4.4** (28+ événements `aiClient.js`) : `buildEndpointUrl`, `chatCompletion` ENTRY/URL/bodyBuilt/fetch CALL/OK/4xx/5xx/429/formatRetry/keyRotation/keyExhausted/SUCCESS/THROW, `parseOpenAIResponse` (détection format OpenAI vs OpenCode Zen string/array/object/empty), `parseGeminiResponse`, `streamChatCompletion` ENTRY/fallback/chunk throttlé 1/5/DONE/ERROR, `fimCompletion` ENTRY/SUCCESS/FAILED
+  - **§4.5** (5 événements `systemPrompt.js`) : `buildSystemMessages` ENTRY/REPLACE/ENRICH/DEFAULT/SUCCESS
+  - **§5.4** + **§5.5** : diffs de code détaillés pour l'instrumentation `aiClient.js` et `systemPrompt.js` (avec détection de format `opencode-zen-empty/string/array/object` et calcul de longueurs de messages)
+  - **Phases CT-3.5 + CT-3.6** ajoutées au plan d'implémentation (~5h en plus, total ~15.75h)
+- **Tests E2E mis à jour** : capture étendue aux 5 préfixes (`[AI-CLIENT]`, `[SYSTEM-PROMPT]` ajoutés aux regex)
+- **Total instrumenté** : 75+ événements répartis sur 5 modules (15+ chatPanel, 25+ promptEngine, 16+ optimiseur, 28+ aiClient, 5+ systemPrompt)
+- **Flot end-to-end tracé** : `sendMessage()` → `buildSystemMessages()` → `chatCompletion()` → `parseOpenAIResponse()` → `streamChatCompletion()` → `optimizeResponse()` → DOM rendering
+
+### ✅ Sprint CT-4 (implémentation terminée, validation E2E 5/5)
+- **`src/code-city/ai/traceLogger.js`** créé : 5 helpers préfixés (`traceChat`, `tracePromptEngine`, `traceOptimizer`, `traceAiClient`, `traceSystemPrompt`), ring buffer `window.__CHAT_LOG_BUFFER` (500 max FIFO), format mixte `console.log` + `console.groupCollapsed()`, timestamps relatifs `Date.now()`, activation build-time `VITE_CHAT_DEBUG=true` (dev) / `false` (prod) → dead-code-eliminated
+- **`.env.development`** + **`.env.production`** créés : `VITE_CHAT_DEBUG=true|false` commited (le `.env` utilisateur reste gitignored)
+- **5 fichiers instrumentés** (75+ événements) : `chatPanel.js` (16), `promptEngine.js` (25+), `chatPanel.js optimizeLastResponse` (5), `aiClient.js` (28+), `systemPrompt.js` (5)
+- **Tests unitaires** : `src/code-city/ai/traceLogger.test.js` (12 tests, jsdom env) → 12/12 ✅
+- **E2E spec** `e2e/chat-trace.spec.js` : 5 tests avec double-gating
+  1. **Test 1** : `__CHAT_LOG_BUFFER` initialisé au chargement
+  2. **Test 2** : 5 helpers `trace*()` importables depuis `traceLogger.js`
+  3. **Test 3** : Envoi d'un message → ≥ 10 entrées couvrant 4 préfixes obligatoires (`[CHAT]`, `[PROMPT-ENGINE]`, `[AI-CLIENT]`, `[SYSTEM-PROMPT]`) + 4 événements clés (`sendMessage ENTRY`, `user message pushed`, `buildSystemMessages`, `preparePrompt`)
+  4. **Test 4** : Timestamps `elapsedMs` en ordre chronologique monotone
+  5. **Test 5** `@slow` gated `E2E_WITH_LLM=true` : valide la couverture `[AI-CLIENT]` + optimiser en condition réelle — attend `[CHAT] onDone` + un événement d'optimisation (`[PROMPT-ENGINE] optimizeResponse*` OU `[CHAT] optimizeLastResponse BADGE*`)
+- **Robustesse du test 5** : `test.beforeAll` skip avec message clair si env-server:3001 absent, `waitForFunction` déterministe (pas de `waitForTimeout` arbitraire), `setOptimizationThreshold(100)` via `window.__state.actions` pour forcer le déclenchement de l'optimiseur, prompt long directif pour réponse > 100 tokens
+- **Cleanup** : suppression de `e2e/_debug/chat-trace-diagnose.spec.js` (one-shot diagnostic) + ajout de `e2e/_debug/README.md` documentant les 3 landmines (env-server:3001, keyEvents pré-API-only, chat panel interaction tips)
+- **`playwright.config.js`** : `testIgnore: ['e2e/_debug/**']` ajouté (exclut aussi `opencode-zen-trace.spec.js` et `openrouter-test4-trace.spec.js` historiques)
+- **Validation finale** :
+  - `npx vitest run` → **404/404** ✅ en 1.7s (0 régression)
+  - `npx playwright test e2e/chat-trace.spec.js --grep-invert @slow` → **4/4** ✅ en 6.6s (CI rapide)
+  - **`E2E_WITH_LLM=true npx playwright test e2e/chat-trace.spec.js` → 5/5 ✅ en 33.7s** (test 5 ✅ en 28.7s, provider openrouter + qwen/qwen3.5-9b + 4 clés API, réponse LLM réelle avec optimisation déclenchée)
+- **Divergence spec/code résolue** : `promptEngine.optimizeResponse` utilise maintenant le helper `traceOptimizer` (import ajouté en parallèle de `tracePromptEngine`), et ses **8 événements** internes émettent désormais le préfixe `[OPTIMIZER]` conformément à la spec `chat-trace-spec.md §4.6 + §5.0` (ENTRY / SKIP ×2 / NO_PROVIDER / API_CALL / **ENRICH** / SUCCESS / EMPTY / FAILED). Le test 5 n'accepte plus que `[OPTIMIZER] optimizeResponse*` ou `[CHAT] optimizeLastResponse BADGE*`
+- **🆕 Mode `enrich` pour `optimizeResponse`** : nouveau paramètre `options.mode = 'replace' | 'enrich'` (défaut `'replace'`). Si `'enrich'`, le system prompt de l'optimisation concatène `OPTIMIZATION_SYSTEM_PROMPT` avec le contenu du prompt préparé (`preparedPrompt.prompt`) pour donner au LLM d'optimisation le contexte complet du projet. Émet l'événement `[OPTIMIZER] optimizeResponse ENRICH` avec `customPromptLen` + `systemPromptLen` + `enrichedLen`. Mode utile pour conserver la terminologie métier lors de la condensation. Le mode apparaît aussi dans les traces `optimizeResponse ENTRY` (champ `mode`) et `optimizeResponse API_CALL` (champ `mode`). Implémentation : `src/code-city/ai/promptEngine.js` (méthode `optimizeResponse`, ~10 lignes ajoutées). Aucune modif du site d'appel (`chatPanel.optimizeLastResponse`) — le mode par défaut `'replace'` préserve le comportement existant
+- **Spec bumped v1.2 → v1.3** : `.dev-plans/chat-trace-spec.md` enrichi avec
+  - **§4.6 (nouveau, puis précision v1.3.1, puis mode enrich v1.3.2)** : tableau détaillé des **8 événements** `[OPTIMIZER]` émis par `promptEngine.optimizeResponse` (ENTRY / SKIP ×2 / NO_PROVIDER / API_CALL / **ENRICH** / SUCCESS / EMPTY / FAILED — la ligne ENRICH a été ajoutée après implémentation du mode `enrich` ; elle avait été initialement listée puis retirée pour éviter de réserver un événement non implémenté), justification du préfixe dédié (séparation prompt prep vs post-optimisation), note sur le double préfixe `[OPTIMIZER]` (fonction métier) vs `[CHAT]` (wrapper d'orchestration `optimizeLastResponse`)
+  - **§5.0 (étendu)** : table d'alignement `helper ↔ fichier ↔ préfixe ↔ événements typiques` + note historique de l'alignement Sprint CT-4
+  - **§10 (étendu)** : 2 nouvelles cases à cocher pour l'alignement helper/fichier + validation E2E_WITH_LLM=true 5/5
+  - **En-tête** : version bumpée 1.2 → 1.3, date 2026-06-10 → 2026-06-11, mention `traceOptimizer` dans le champ `Fichiers cibles`
 
 ---
 

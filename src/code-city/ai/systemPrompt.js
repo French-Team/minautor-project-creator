@@ -8,6 +8,8 @@
  * @module systemPrompt
  */
 
+import { traceSystemPrompt } from './traceLogger.js';
+
 export const SYSTEM_PROMPT = `Tu es **Mina**, l'assistant IA de Minautor — un outil de conception de projet basé sur un canvas interactif.
 
 ## Ton rôle
@@ -61,14 +63,45 @@ Chaque type a des propriétés spécifiques (ex: service-api a endpoint, method,
  * @returns {Array} Messages système + contexte (format API OpenAI)
  */
 export function buildSystemMessages(graph, customPrompt = null, mode = 'replace') {
+  const { nodes: nodesCount0 = 0, edges: edgesCount0 = 0 } = graph || {};
+  traceSystemPrompt('buildSystemMessages ENTRY', {
+    hasGraph: !!graph,
+    hasCustomPrompt: !!customPrompt,
+    mode,
+    customPromptLen: customPrompt?.length || 0,
+    nodesCount: nodesCount0,
+    edgesCount: edgesCount0,
+  });
+
   // Si un prompt préparé est fourni :
   // - mode 'replace' : utiliser UNIQUEMENT le prompt préparé
   // - mode 'enrich'  : préfixer le prompt préparé devant le SYSTEM_PROMPT
   if (customPrompt) {
     if (mode === 'enrich') {
-      return [{ role: 'system', content: customPrompt + '\n\n---\n\n' + SYSTEM_PROMPT }];
+      const enriched = customPrompt + '\n\n---\n\n' + SYSTEM_PROMPT;
+      traceSystemPrompt('buildSystemMessages ENRICH', {
+        customPromptLen: customPrompt.length,
+        systemPromptLen: SYSTEM_PROMPT.length,
+        enrichedLen: enriched.length,
+      });
+      const out = [{ role: 'system', content: enriched }];
+      traceSystemPrompt('buildSystemMessages SUCCESS', {
+        mode: 'enrich',
+        messagesCount: out.length,
+        contentLen: out[0].content.length,
+      });
+      return out;
     }
-    return [{ role: 'system', content: customPrompt }];
+    traceSystemPrompt('buildSystemMessages REPLACE', {
+      customPromptLen: customPrompt.length,
+    });
+    const out = [{ role: 'system', content: customPrompt }];
+    traceSystemPrompt('buildSystemMessages SUCCESS', {
+      mode: 'replace',
+      messagesCount: out.length,
+      contentLen: out[0].content.length,
+    });
+    return out;
   }
 
   const { nodes, edges } = graph;
@@ -113,5 +146,17 @@ export function buildSystemMessages(graph, customPrompt = null, mode = 'replace'
     contextParts.push('');
   }
 
-  return [{ role: 'system', content: contextParts.join('\n') }];
+  const finalContent = contextParts.join('\n');
+  traceSystemPrompt('buildSystemMessages DEFAULT', {
+    nodesCount: nodes.length,
+    edgesCount: edges.length,
+    contentLen: finalContent.length,
+  });
+  const out = [{ role: 'system', content: finalContent }];
+  traceSystemPrompt('buildSystemMessages SUCCESS', {
+    mode: 'default',
+    messagesCount: out.length,
+    contentLen: out[0].content.length,
+  });
+  return out;
 }

@@ -7,6 +7,7 @@ import {
   buildEndpointUrl,
   formatGeminiRequest,
   parseGeminiResponse,
+  parseOpenAIResponse,
   chatCompletion,
   fimCompletion,
   testConnection,
@@ -285,5 +286,197 @@ describe('testConnection', () => {
     const result = await testConnection(provider);
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Network error');
+  });
+});
+
+// --- parseOpenAIResponse ---
+
+describe('parseOpenAIResponse', () => {
+  it('extrait le contenu d\'une réponse OpenAI (choices[0].message.content)', () => {
+    const data = {
+      choices: [{ message: { content: 'Réponse OpenAI' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    };
+    const result = parseOpenAIResponse(data);
+    expect(result.content).toBe('Réponse OpenAI');
+    expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
+  });
+
+  it('extrait le contenu d\'une réponse OpenCode Zen (output: string)', () => {
+    const data = {
+      output: 'Réponse OpenCode',
+      usage: { prompt_tokens: 8, completion_tokens: 4 },
+    };
+    const result = parseOpenAIResponse(data);
+    expect(result.content).toBe('Réponse OpenCode');
+    expect(result.usage).toEqual({ promptTokens: 8, completionTokens: 4 });
+  });
+
+  it('extrait le contenu d\'une réponse OpenCode Zen (output: { content })', () => {
+    const data = {
+      output: { content: 'Réponse via output.content' },
+      usage: { prompt_tokens: 12, completion_tokens: 6 },
+    };
+    const result = parseOpenAIResponse(data);
+    expect(result.content).toBe('Réponse via output.content');
+  });
+
+  it('extrait le contenu d\'une réponse OpenCode Zen (output: array d\'items message)', () => {
+    // Format réel observé : { output: [{ type: "message", content: [{ type: "output_text", text: "..." }] }] }
+    const data = {
+      id: 'resp-abc',
+      object: 'response',
+      model: 'deepseek-v4-flash',
+      output: [
+        { type: 'reasoning', summary: [] },
+        {
+          type: 'message',
+          content: [
+            { type: 'output_text', text: 'Les chats sont très mignons.' },
+          ],
+        },
+      ],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 85, output_tokens: 10, total_tokens: 95 },
+    };
+    const result = parseOpenAIResponse(data);
+    expect(result.content).toBe('Les chats sont très mignons.');
+    // input_tokens/output_tokens (Anthropic-style) sont mappés sur prompt/completion
+    expect(result.usage).toEqual({ promptTokens: 85, completionTokens: 10 });
+  });
+
+  it('concatène les .text de plusieurs items type=message dans output[]', () => {
+    const data = {
+      output: [
+        { type: 'message', content: [{ type: 'output_text', text: 'Hello ' }] },
+        { type: 'message', content: [{ type: 'output_text', text: 'world ' }] },
+        { type: 'message', content: [{ type: 'output_text', text: '!' }] },
+      ],
+    };
+    const result = parseOpenAIResponse(data);
+    expect(result.content).toBe('Hello world !');
+  });
+
+  it('ignore les items de type non-message (reasoning, function_call)', () => {
+    const data = {
+      output: [
+        { type: 'reasoning', summary: 'thinking...' },
+        { type: 'function_call', name: 'foo', arguments: '{}' },
+        { type: 'message', content: [{ type: 'output_text', text: 'final answer' }] },
+      ],
+    };
+    const result = parseOpenAIResponse(data);
+    expect(result.content).toBe('final answer');
+  });
+
+  it('extrait le texte d\'un format deepseek reasoning avec .content[].text[] profondément imbriqués', () => {
+    // Format réel deepseek-v4-flash (OpenCode Zen) :
+    //   - item reasoning avec summary[] imbriqué
+    //   - item message avec content[] de plusieurs parts (output_text + annotations)
+    //   - usage avec input_tokens/output_tokens (Anthropic-style)
+    const data = {
+      id: 'resp-deepseek-xyz',
+      object: 'response',
+      model: 'deepseek-v4-flash',
+      created_at: 1717600000,
+      output: [
+        {
+          type: 'reasoning',
+          id: 'rs_1',
+          summary: [
+            { type: 'summary_text', text: 'User asked about cats' },
+          ],
+        },
+        {
+          type: 'message',
+          id: 'msg_2',
+          status: 'completed',
+          role: 'assistant',
+          content: [
+            { type: 'output_text', text: 'Les chats', annotations: [] },
+            { type: 'output_text', text: ' sont très', annotations: [] },
+            { type: 'output_text', text: ' mignons.', annotations: [] },
+          ],
+        },
+      ],
+      stop_reason: 'end_turn',
+      usage: {
+        input_tokens: 42,
+        output_tokens: 18,
+        total_tokens: 60,
+      },
+    };
+    const result = parseOpenAIResponse(data);
+    // Les 3 parts .text du message sont concaténés dans l'ordre
+    expect(result.content).toBe('Les chats sont très mignons.');
+    // Usage Anthropic-style mappé sur le format unifié
+    expect(result.usage).toEqual({ promptTokens: 42, completionTokens: 18 });
+  });
+
+  it('extrait le texte d\'un message avec content mixte (text + non-text) en filtrant les parts non textuelles', () => {
+    // Format avec parts hétérogènes : output_text, refusals, etc.
+    const data = {
+      output: [
+        {
+          type: 'message',
+          content: [
+            { type: 'output_text', text: 'Réponse ' },
+            { type: 'refusal', refusal: 'je refuse cette partie' },
+            { type: 'output_text', text: 'mixte.' },
+            { type: 'image', image_url: 'https://example.com/img.png' },
+          ],
+        },
+      ],
+    };
+    const result = parseOpenAIResponse(data);
+    // Seules les parts .text sont conservées (les autres sont silencieusement ignorées)
+    expect(result.content).toBe('Réponse mixte.');
+  });
+
+  it('throw une erreur explicite si output: [] avec stop_reason (modèle n\'a rien généré)', () => {
+    const data = {
+      id: 'resp-123',
+      object: 'response',
+      model: 'deepseek-v4-flash',
+      output: [],
+      stop_reason: 'max_output_tokens',
+      usage: { input_tokens: 85, output_tokens: 10, total_tokens: 95 },
+    };
+    expect(() => parseOpenAIResponse(data)).toThrow(/output vide/);
+  });
+
+  it('l\'erreur output vide expose stop_reason et usage pour le diagnostic', () => {
+    const data = {
+      output: [],
+      stop_reason: 'quota_exhausted',
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    };
+    let err;
+    try {
+      parseOpenAIResponse(data);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toContain('output vide');
+    expect(err.message).toContain('quota_exhausted');
+    expect(err.message).toContain('"input_tokens":0');
+  });
+
+  it('fallback stopReason (camelCase) si stop_reason absent', () => {
+    const data = { output: [], stopReason: 'content_filter' };
+    let err;
+    try {
+      parseOpenAIResponse(data);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toContain('content_filter');
+  });
+
+  it('throw si ni choices ni output ne sont présents (format inconnu)', () => {
+    const data = { id: 'abc', model: 'foo' };
+    expect(() => parseOpenAIResponse(data)).toThrow(/Réponse API invalide/);
   });
 });

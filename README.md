@@ -251,9 +251,19 @@ Chaque catégorie expose un **formulaire adapté** (endpoints, schémas JSON, cr
 | ![Éditeur Minautor](assets/editeur.png) | ![Propriétés Minautor](assets/proprietes.png) | ![Panneau Providers](assets/providers.png) |
 | *Modélisez vos flux par glisser-déposer.* | *Enrichissez chaque nœud avec des données métier.* | *Configurez vos providers IA en 6 étapes.* |
 
-| Chat Mina | Assistant |
+| Chat Minautor Team | Assistant |
 | :---: | :---: |
-| ![Mina](assets/mina.jpg) | ![Mina en action](assets/assistant.png) |
+| ![Minautor](assets/minautor.png) | ![Minautor en action](assets/assistant.png) |
+| *Votre copilote IA multi-providers.* | *Quick actions, streaming, post-optimisation.* |
+| ![Mina](assets/athena-banniere.jpg) | ![Mina en action](assets/assistant.png) |
+| *Votre copilote IA multi-providers.* | *Quick actions, streaming, post-optimisation.* |
+| ![Prométhée](assets/prométhée-banniere.jpg) | ![Prométhée en action](assets/assistant.png) |
+| *Votre copilote IA multi-providers.* | *Quick actions, streaming, post-optimisation.* |
+| ![Eole](assets/Eole-banniere.jpg) | ![Eole en action](assets/assistant.png) |
+| *Votre copilote IA multi-providers.* | *Quick actions, streaming, post-optimisation.* |
+| ![Athéna](assets/athena-banniere.jpg) | ![Athéna en action](assets/assistant.png) |
+| *Votre copilote IA multi-providers.* | *Quick actions, streaming, post-optimisation.* |
+| ![Atlas](assets/atlas-banniere.jpg) | ![Atlas en action](assets/assistant.png) |
 | *Votre copilote IA multi-providers.* | *Quick actions, streaming, post-optimisation.* |
 
 ---
