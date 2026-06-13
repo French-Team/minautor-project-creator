@@ -73,7 +73,25 @@ const initialState = () => ({
 
     // Modèle de préparation/optimisation (optionnel)
     preparationModel: null,    // null = utilise le même modèle que le chat
+    // Provider de PRÉPARATION de prompt (optionnel) : permet d'utiliser un provider
+    // DIFFÉRENT du chat pour _enhancePromptViaApi() (PromptEngine). C'est typiquement
+    // un petit modèle rapide/économique (ex: Ollama local) pour améliorer le prompt
+    // avant de l'envoyer au chat. Pas de filtre CW strict : le prompt est petit.
+    // null = utilise le même provider que le chat.
+    preparationProviderId: null,
+    // Provider d'OPTIMISATION de réponse (optionnel) : permet d'utiliser un provider
+    // DIFFÉRENT pour optimizeResponse() (PromptEngine). C'est typiquement un modèle
+    // avec une GRANDE fenêtre de contexte (≥ celle du chat) car il doit recevoir
+    // la réponse complète du chat pour la condenser. null = fallback sur
+    // preparationProviderId (ou le chat). Distingué de preparationProviderId car
+    // les deux rôles ont des besoins opposés (petit vs gros).
+    optimizationProviderId: null,
     optimizationThreshold: 500, // seuil en tokens pour déclencher l'optimisation
+
+    // Slots parallèles pour les providers locaux (LM Studio uniquement).
+    // 1 = comportement séquentiel. 4 = max 4 requêtes concurrentes au serveur.
+    // Restauré depuis savedConfig.maxParallel, défaut = preset.maxParallel ou 1.
+    maxParallel: 1,
 
     // Stats d'optimisation
     optimizationStats: {
@@ -171,6 +189,12 @@ export async function initAssistant() {
     if (typeof savedConfig?.preparationModel === 'string' && savedConfig.preparationModel) {
       state.assistant.preparationModel = savedConfig.preparationModel;
     }
+    // Restaurer maxParallel (slots parallèles pour LM Studio) : config > preset > 1
+    if (typeof savedConfig?.maxParallel === 'number') {
+      state.assistant.maxParallel = Math.max(1, Math.min(8, Math.floor(savedConfig.maxParallel)));
+    } else if (typeof preset?.maxParallel === 'number') {
+      state.assistant.maxParallel = Math.max(1, Math.min(8, Math.floor(preset.maxParallel)));
+    }
 
     // Charger la clé API depuis .env et l'attacher au provider
     await loadEnvKeys();
@@ -185,6 +209,8 @@ export async function initAssistant() {
     const { modelMeta: _, ...current } = state.assistant.provider;
     current.optimizationThreshold = state.assistant.optimizationThreshold;
     current.preparationModel = state.assistant.preparationModel;
+    current.preparationProviderId = state.assistant.preparationProviderId;
+    current.optimizationProviderId = state.assistant.optimizationProviderId;
     state.assistant.providerConfigs[preset.id] = current;
   }
 
@@ -808,6 +834,7 @@ n   */
       const { modelMeta: _, ...saved } = prev;
       saved.optimizationThreshold = state.assistant.optimizationThreshold;
       saved.preparationModel = state.assistant.preparationModel;
+      saved.optimizationProviderId = state.assistant.optimizationProviderId;
       configs[prev.id] = saved;
     }
 
@@ -849,6 +876,35 @@ n   */
       state.assistant.preparationModel = cached.preparationModel;
     } else {
       state.assistant.preparationModel = null;
+    }
+
+    // Restaurer le provider de préparation du provider cible (depuis le cache)
+    // Note : null = utilise le provider actif (chat). String = utilise un autre
+    // provider dont la config est dans state.assistant.providerConfigs[id].
+    if (cached && typeof cached.preparationProviderId === 'string' && cached.preparationProviderId) {
+      state.assistant.preparationProviderId = cached.preparationProviderId;
+    } else {
+      state.assistant.preparationProviderId = null;
+    }
+
+    // Restaurer le provider d'optimisation (séparé de preparationProviderId
+    // car les deux rôles ont des besoins opposés : petit pour l'enhancement,
+    // gros pour l'optimisation). null = fallback sur preparationProviderId
+    // (qui lui-même fallback sur le chat). Migration rétro-compatible : les
+    // configs sauvegardées avant l'introduction de ce champ auront null ici.
+    if (cached && typeof cached.optimizationProviderId === 'string' && cached.optimizationProviderId) {
+      state.assistant.optimizationProviderId = cached.optimizationProviderId;
+    } else {
+      state.assistant.optimizationProviderId = null;
+    }
+
+    // Restaurer maxParallel : cache > preset > 1
+    if (cached && typeof cached.maxParallel === 'number') {
+      state.assistant.maxParallel = Math.max(1, Math.min(8, Math.floor(cached.maxParallel)));
+    } else if (typeof preset?.maxParallel === 'number') {
+      state.assistant.maxParallel = Math.max(1, Math.min(8, Math.floor(preset.maxParallel)));
+    } else {
+      state.assistant.maxParallel = 1;
     }
 
     // Charger la clé API depuis .env et l'attacher au provider
@@ -990,12 +1046,107 @@ n   */
   },
 
   /**
+   * Définit le provider utilisé pour la préparation/optimisation.
+   * Permet d'utiliser un provider DIFFÉRENT du provider de chat
+   * (ex: chat sur LM Studio local, prep sur Mistral online).
+   * Le modèle utilisé pour la prep vient automatiquement de la config
+   * du provider ciblé (state.assistant.providerConfigs[id].model) —
+   * il n'est PAS nécessaire de configurer preparationModel en plus.
+   * @param {string|null} providerId - null = utilise le provider actif (chat)
+   */
+  setPreparationProvider(providerId) {
+    state.assistant.preparationProviderId = providerId || null;
+    // Synchroniser le cache in-memory (pour la persistance via le bouton Enregistrer)
+    const id = state.assistant.provider?.id;
+    if (id) {
+      const configs = state.assistant.providerConfigs || {};
+      if (configs[id]) {
+        configs[id] = { ...configs[id], preparationProviderId: state.assistant.preparationProviderId };
+        state.assistant.providerConfigs = configs;
+      }
+    }
+    notify({ type: 'assistant:preparation-provider', providerId });
+  },
+
+  /**
+   * Définit le provider utilisé pour l'OPTIMISATION de réponse (sortie).
+   * Séparé de setPreparationProvider() car les deux rôles ont des besoins
+   * opposés en fenêtre de contexte :
+   *   - preparation (entrée) : petit modèle rapide suffit
+   *   - optimization (sortie) : doit pouvoir contenir toute la réponse à condenser
+   *
+   * Résolution effective (dans promptEngine.optimizeResponse → resolveOptimizationProvider) :
+   *   1. Si optimizationProviderId est défini ET ≠ du chat, on l'utilise.
+   *   2. Sinon, fallback sur preparationProviderId (puis le chat).
+   *
+   * Le filtre strict de compatibilité CW (≥ chat CW) est appliqué au niveau
+   * de l'UI (getEligiblePrepProviders avec mode='optimize') pour empêcher
+   * la sélection d'un provider avec une CW insuffisante — et un auto-reset
+   * côté subscriber re-déclenche le toast warning si l'incompatibilité
+   * survient à cause d'un changement de chat.
+   *
+   * @param {string|null} providerId - null = fallback sur preparationProviderId
+   */
+  setOptimizationProvider(providerId) {
+    state.assistant.optimizationProviderId = providerId || null;
+    // Synchroniser le cache in-memory (pour la persistance via le bouton Enregistrer)
+    const id = state.assistant.provider?.id;
+    if (id) {
+      const configs = state.assistant.providerConfigs || {};
+      if (configs[id]) {
+        configs[id] = { ...configs[id], optimizationProviderId: state.assistant.optimizationProviderId };
+        state.assistant.providerConfigs = configs;
+      }
+    }
+    notify({ type: 'assistant:optimization-provider', providerId });
+  },
+
+  /**
    * Définit le seuil d'optimisation en tokens.
    * @param {number} threshold - Seuil en tokens (>= 100)
    */
   setOptimizationThreshold(threshold) {
     state.assistant.optimizationThreshold = Math.max(100, Math.floor(threshold));
     notify({ type: 'assistant:optimization-threshold', threshold: state.assistant.optimizationThreshold });
+  },
+
+  /**
+   * Définit le nombre de slots parallèles pour les providers locaux
+   * (LM Studio). Le serveur route automatiquement les requêtes
+   * concurrentes via son scheduler interne.
+   * @param {number} slots - Nombre de slots (1-8, 1 = séquentiel)
+   */
+  setMaxParallel(slots) {
+    const n = Math.max(1, Math.min(8, Math.floor(Number(slots) || 1)));
+    state.assistant.maxParallel = n;
+    // Synchroniser le provider ACTIF (chatCompletion lit provider.maxParallel)
+    // ET le cache in-memory (pour la persistance via le bouton Enregistrer).
+    if (state.assistant.provider) {
+      state.assistant.provider.maxParallel = n;
+    }
+    const id = state.assistant.provider?.id;
+    if (id) {
+      const configs = state.assistant.providerConfigs || {};
+      if (configs[id]) {
+        configs[id] = { ...configs[id], maxParallel: n };
+        state.assistant.providerConfigs = configs;
+      }
+    }
+    notify({ type: 'assistant:max-parallel', maxParallel: n });
+  },
+
+  /**
+   * Stocke la config serveur lue pour un provider (éphémère, non persistée).
+   * Utilisée par les providers locaux (LM Studio) pour exposer à la Status
+   * zone le nombre de modèles chargés (= nombre de slots actifs côté serveur)
+   * en plus du `maxParallel` configuré par l'utilisateur.
+   * @param {Object|null} serverConfig
+   */
+  setServerConfig(serverConfig) {
+    if (state.assistant.provider) {
+      state.assistant.provider.serverConfig = serverConfig || null;
+    }
+    notify({ type: 'assistant:server-config', serverConfig });
   },
 
   /**

@@ -30,9 +30,10 @@ import {
 } from '../mermaid/docGenerator.js';
 import { generateZip, downloadZip } from '../mermaid/zipExporter.js';
 import { PRIORITY_ORDER, SPRINT_META, getPriorityKey, sanitizeFilename } from '../mermaid/zipConstants.js';
-import { iconCode, iconPhoto, iconDownload, iconJson } from '../icons.js';
+import { getChatIcon } from '../chatIcons.js';
 import { openChatPanel } from '../ai/chatPanel.js';
 import { buildMermaidCode } from '../mermaid/build.js';
+import { escapeHtml, escapeAttr } from '../utils/html.js';
 
 let isOpen = false;
 let currentMode = 'full'; // 'selected' | 'subtree' | 'full'
@@ -188,9 +189,9 @@ function renderExportOptions() {
     <div class="export-section">
       <div class="export-section__title">Périmètre</div>
       <div class="export-mode-btns">
-        ${modeBtn('selected', 'Nœud sélectionné', '📄', currentMode === 'selected')}
-        ${modeBtn('subtree', 'Sous-arbre', '🔗', currentMode === 'subtree')}
-        ${modeBtn('full', 'Plan complet', '📋', currentMode === 'full')}
+        ${modeBtn('selected', 'Nœud sélectionné', getChatIcon('file-text', 16), currentMode === 'selected')}
+        ${modeBtn('subtree', 'Sous-arbre', getChatIcon('link', 16), currentMode === 'subtree')}
+        ${modeBtn('full', 'Plan complet', getChatIcon('clipboard-list', 16), currentMode === 'full')}
       </div>
       <div class="export-mode__desc">${getModeDescription(currentMode)}</div>
     </div>
@@ -199,52 +200,52 @@ function renderExportOptions() {
       <div class="export-section__title">Format</div>
       <div class="export-panel__list">
         <button type="button" class="export-card" data-format="doc" ${isEmpty ? 'disabled' : ''}>
-          <span class="export-card__icon">${iconCode()}</span>
+          <span class="export-card__icon">${getChatIcon("code")}</span>
           <span class="export-card__body">
             <span class="export-card__title">Documentation</span>
             <span class="export-card__desc">Fichier .md avec propriétés structurées</span>
           </span>
-          <span class="export-card__chevron">${iconDownload()}</span>
+          <span class="export-card__chevron">${getChatIcon("download")}</span>
         </button>
         <button type="button" class="export-card" data-format="code" ${isEmpty ? 'disabled' : ''}>
-          <span class="export-card__icon">${iconCode()}</span>
+          <span class="export-card__icon">${getChatIcon("code")}</span>
           <span class="export-card__body">
             <span class="export-card__title">Code Mermaid</span>
             <span class="export-card__desc">Fichier .mmd (texte brut)</span>
           </span>
-          <span class="export-card__chevron">${iconDownload()}</span>
+          <span class="export-card__chevron">${getChatIcon("download")}</span>
         </button>
         <button type="button" class="export-card" data-format="json" ${isEmpty ? 'disabled' : ''}>
-          <span class="export-card__icon">${iconJson()}</span>
+          <span class="export-card__icon">${getChatIcon("braces")}</span>
           <span class="export-card__body">
             <span class="export-card__title">JSON Brut</span>
             <span class="export-card__desc">Données structurées nœuds + arêtes + propriétés</span>
           </span>
-          <span class="export-card__chevron">${iconDownload()}</span>
+          <span class="export-card__chevron">${getChatIcon("download")}</span>
         </button>
         <button type="button" class="export-card" data-format="svg" ${isEmpty ? 'disabled' : ''}>
-          <span class="export-card__icon">${iconPhoto()}</span>
+          <span class="export-card__icon">${getChatIcon("image")}</span>
           <span class="export-card__body">
             <span class="export-card__title">Image SVG</span>
             <span class="export-card__desc">Vectoriel, redimensionnable à l'infini</span>
           </span>
-          <span class="export-card__chevron">${iconDownload()}</span>
+          <span class="export-card__chevron">${getChatIcon("download")}</span>
         </button>
         <button type="button" class="export-card" data-format="png" ${isEmpty ? 'disabled' : ''}>
-          <span class="export-card__icon">${iconPhoto()}</span>
+          <span class="export-card__icon">${getChatIcon("image")}</span>
           <span class="export-card__body">
             <span class="export-card__title">Image PNG</span>
             <span class="export-card__desc">Bitmap, échelle ×2 (qualité Retina)</span>
           </span>
-          <span class="export-card__chevron">${iconDownload()}</span>
+          <span class="export-card__chevron">${getChatIcon("download")}</span>
         </button>
         <button type="button" class="export-card export-card--primary" data-format="zip" ${isEmpty ? 'disabled' : ''}>
-          <span class="export-card__icon">📦</span>
+          <span class="export-card__icon">${getChatIcon('package', 20)}</span>
           <span class="export-card__body">
             <span class="export-card__title">ZIP Complet</span>
             <span class="export-card__desc">Documentation + diagramme + README</span>
           </span>
-          <span class="export-card__chevron">${iconDownload()}</span>
+          <span class="export-card__chevron">${getChatIcon("download")}</span>
         </button>
       </div>
     </div>
@@ -261,15 +262,15 @@ function renderExportOptions() {
     <div class="export-section export-section--preview">
       <div class="export-section__title">Aperçu Markdown</div>
       <button type="button" class="btn btn--sm" id="export-preview-btn" ${isEmpty ? 'disabled' : ''}>
-        <span>👁</span> Voir l'aperçu
+        ${getChatIcon('eye', 14)} Voir l'aperçu
       </button>
     </div>
 
     <div class="export-section export-section--mina">
-      <div class="export-section__title">🤖 Assistant Mina</div>
+      <div class="export-section__title">${getChatIcon('bot', 14)} Assistant Mina</div>
       <p class="export-section__desc">Générer la documentation complète de ton projet avec l'assistant IA.</p>
       <button type="button" class="btn btn--sm btn--primary" id="export-doc-mina-btn" ${isEmpty ? 'disabled' : ''}>
-        <span>🤖</span> Générer la doc avec Mina
+        ${getChatIcon('bot', 14)} Générer la doc avec Mina
       </button>
     </div>
 
@@ -335,12 +336,12 @@ function generatePreviewMarkdown() {
   const parts = [];
 
   // En-tête
-  parts.push('# 📋 Aperçu du ZIP — Plan de Développement\n');
+  parts.push('# Aperçu du ZIP — Plan de Développement\n');
   parts.push(`> ${totalNodes} élément${totalNodes > 1 ? 's' : ''} organisé${totalNodes > 1 ? 's' : ''} par sprint (priorité)\n`);
   parts.push('---\n');
 
   // Timeline rapide
-  parts.push('## 📊 Vue d\'ensemble\n');
+  parts.push("## Vue d'ensemble\n");
   parts.push('```');
   for (const key of [...PRIORITY_ORDER, 'none']) {
     const arr = sprints[key];
@@ -372,7 +373,7 @@ function generatePreviewMarkdown() {
       for (const line of lines) {
         const trimmed = line.trim();
         // Sauter le breadcrumb et le heading principal (déjà affiché)
-        if (trimmed.startsWith('> 📁')) continue;
+        if (trimmed.startsWith('> 📁')) continue; // (no-op: garde-fou pour ancien format breadcrumb avec emoji)
         if (trimmed.match(/^##\s+/)) continue;
         if (trimmed === '---' && lines.indexOf(line) < 3) continue;
         parts.push(line);
@@ -517,16 +518,6 @@ function inlineMarkdown(text) {
     .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" class="preview-md__link">$1</a>');
 }
 
-function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function escapeAttr(str) {
-  return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-
-
 function renderMarkdownPreview() {
   const md = generatePreviewMarkdown();
   if (!md) return '<div class="export-preview__empty">Aucun contenu à prévisualiser</div>';
@@ -548,7 +539,7 @@ function ensurePreviewModal() {
     <div class="preview-modal__dialog">
       <div class="preview-modal__header">
         <span class="preview-modal__title" id="preview-modal-title">Aperçu du ZIP</span>
-        <button type="button" class="preview-modal__close" title="Fermer">✕</button>
+        <button type="button" class="preview-modal__close" title="Fermer">${getChatIcon('x', 14)}</button>
       </div>
       <div class="preview-modal__body" id="preview-modal-content"></div>
     </div>

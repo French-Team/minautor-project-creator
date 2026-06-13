@@ -11,7 +11,7 @@
  */
 
 import { getState, subscribe, actions } from '../state.js';
-import { getIcon, iconLink, iconCog, iconTrash, iconDisconnect, iconXMark, iconRefresh, iconBranch, iconUser } from '../icons.js';
+import { getChatIcon } from '../chatIcons.js';
 
 import { openPropertiesAndFocusLabel } from '../quartierCenter/centerTabs.js';
 import { openChatPanel } from '../ai/chatPanel.js';
@@ -130,7 +130,7 @@ function updateHubElement(el, node) {
   el.style.left = `${node.x}px`;
   el.style.top = `${node.y}px`;
   const body = el.querySelector('.hub-body');
-  if (body) body.querySelector('.element-icon').innerHTML = getIcon('hub');
+  if (body) body.querySelector('.element-icon').innerHTML = getChatIcon('hub');
   // Mettre à jour les positions des branches SVG et ports
   const branches = node.hubBranches || 4;
   const { RADIUS, LINE_RADIUS, startAngle, angleStep } = getHubBranchParams(node);
@@ -189,7 +189,7 @@ function updateNodeElement(el, node) {
   el.style.top = `${node.y}px`;
   // L'icône vient de la variante (si définie) ou du type
   const iconKey = node.icon || node.type;
-  el.querySelector('.element-icon').innerHTML = getIcon(iconKey);
+  el.querySelector('.element-icon').innerHTML = getChatIcon(iconKey);
   el.querySelector('.element-name').textContent = node.label || '';
 }
 
@@ -342,7 +342,7 @@ function createEdgeElement(edge) {
   xSvg.setAttribute('y', '-8');
   xSvg.setAttribute('width', '16');
   xSvg.setAttribute('height', '16');
-  xSvg.innerHTML = `<span xmlns="http://www.w3.org/1999/xhtml" class="edge-handle__icon">${iconXMark()}</span>`;
+  xSvg.innerHTML = `<span xmlns="http://www.w3.org/1999/xhtml" class="edge-handle__icon">${getChatIcon("x")}</span>`;
   handle.appendChild(xSvg);
   g.appendChild(handle);
   // Click × → removeEdge
@@ -412,7 +412,7 @@ function createNodeElement(node) {
     const hubSize = 160;
     const cx = hubSize / 2;
     const cy = hubSize / 2;
-    let hubHtml = `<div class="hub-body"><span class="element-icon">${getIcon('hub')}</span></div>`;
+    let hubHtml = `<div class="hub-body"><span class="element-icon">${getChatIcon('hub')}</span></div>`;
     hubHtml += `<svg class="hub-branches-svg" xmlns="http://www.w3.org/2000/svg">`;
     for (let i = 0; i < branches; i++) {
       const angle = startAngle + i * angleStep;
@@ -426,17 +426,17 @@ function createNodeElement(node) {
       hubHtml += `<button class="port hub-port" data-port="hub-${i}" type="button" style="left:${px}px;top:${py}px"></button>`;
     }
     hubHtml += `<div class="port-menu port-menu--hub" data-for="hub" role="toolbar">`;
-    hubHtml += `<button class="port-menu__btn" data-action="connect" type="button" title="Connecter">${iconLink()}</button>`;
-    hubHtml += `<button class="port-menu__btn" data-action="disconnect" type="button" title="Déconnecter">${iconDisconnect()}</button>`;
-    hubHtml += `<button class="port-menu__btn" data-action="reconnect" type="button" title="Reconnecter">${iconRefresh()}</button>`;
-    hubHtml += `<button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer">${iconTrash()}</button>`;
+    hubHtml += `<button class="port-menu__btn" data-action="connect" type="button" title="Connecter">${getChatIcon("link")}</button>`;
+    hubHtml += `<button class="port-menu__btn" data-action="disconnect" type="button" title="Déconnecter">${getChatIcon("unlink")}</button>`;
+    hubHtml += `<button class="port-menu__btn" data-action="reconnect" type="button" title="Reconnecter">${getChatIcon("refresh")}</button>`;
+    hubHtml += `<button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer">${getChatIcon("trash")}</button>`;
     hubHtml += `</div>`;
     hubHtml += `<div class="node-menu" role="toolbar" aria-label="Actions du connecteur">`;
     hubHtml += `<button class="node-menu__btn node-menu__btn--num" data-action="resize-4" type="button" title="4 branches">4</button>`;
     hubHtml += `<button class="node-menu__btn node-menu__btn--num" data-action="resize-6" type="button" title="6 branches">6</button>`;
     hubHtml += `<button class="node-menu__btn node-menu__btn--num" data-action="resize-8" type="button" title="8 branches">8</button>`;
     hubHtml += `<button class="node-menu__btn node-menu__btn--num" data-action="resize-10" type="button" title="10 branches">10</button>`;
-    hubHtml += `<button class="node-menu__btn node-menu__btn--danger" data-action="delete" type="button" title="Supprimer">${iconTrash()}</button>`;
+    hubHtml += `<button class="node-menu__btn node-menu__btn--danger" data-action="delete" type="button" title="Supprimer">${getChatIcon("trash")}</button>`;
     hubHtml += `</div>`;
     el.innerHTML = hubHtml;
     // Event listeners (même pattern que les nœuds normaux)
@@ -496,19 +496,19 @@ function createNodeElement(node) {
   // === NŒUD NORMAL ===
   el.innerHTML = `
     <div class="port-menu port-menu--in" data-for="in" role="toolbar" aria-label="Actions du port d'entrée gauche">
-      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${iconLink()}</button>
-      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${iconDisconnect()}</button>
-      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${iconRefresh()}</button>
-      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${iconBranch()}</button>
-      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${iconTrash()}</button>
+      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${getChatIcon("link")}</button>
+      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${getChatIcon("unlink")}</button>
+      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${getChatIcon("refresh")}</button>
+      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${getChatIcon("git-branch")}</button>
+      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${getChatIcon("trash")}</button>
     </div>
     <button class="port port--in" data-port="in" type="button" aria-label="Port d'entrée"></button>
     <div class="port-menu port-menu--top" data-for="top" role="toolbar" aria-label="Actions du port d'entrée haut">
-      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${iconLink()}</button>
-      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${iconDisconnect()}</button>
-      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${iconRefresh()}</button>
-      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${iconBranch()}</button>
-      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${iconTrash()}</button>
+      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${getChatIcon("link")}</button>
+      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${getChatIcon("unlink")}</button>
+      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${getChatIcon("refresh")}</button>
+      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${getChatIcon("git-branch")}</button>
+      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${getChatIcon("trash")}</button>
     </div>
     <button class="port port--top" data-port="top" type="button" aria-label="Port d'entrée haut"></button>
     <div class="element-body">
@@ -517,25 +517,25 @@ function createNodeElement(node) {
     </div>
     <button class="port port--out" data-port="out" type="button" aria-label="Port de sortie"></button>
     <div class="port-menu port-menu--out" data-for="out" role="toolbar" aria-label="Actions du port de sortie droite">
-      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${iconLink()}</button>
-      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${iconDisconnect()}</button>
-      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${iconRefresh()}</button>
-      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${iconBranch()}</button>
-      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${iconTrash()}</button>
+      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${getChatIcon("link")}</button>
+      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${getChatIcon("unlink")}</button>
+      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${getChatIcon("refresh")}</button>
+      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${getChatIcon("git-branch")}</button>
+      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${getChatIcon("trash")}</button>
     </div>
     <button class="port port--bottom" data-port="bottom" type="button" aria-label="Port de sortie bas"></button>
     <div class="port-menu port-menu--bottom" data-for="bottom" role="toolbar" aria-label="Actions du port de sortie bas">
-      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${iconLink()}</button>
-      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${iconDisconnect()}</button>
-      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${iconRefresh()}</button>
-      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${iconBranch()}</button>
-      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${iconTrash()}</button>
+      <button class="port-menu__btn" data-action="connect"     type="button" title="Connecter vers un autre nœud" aria-label="Connecter">${getChatIcon("link")}</button>
+      <button class="port-menu__btn" data-action="disconnect"  type="button" title="Déconnecter toutes les arêtes de ce port" aria-label="Déconnecter">${getChatIcon("unlink")}</button>
+      <button class="port-menu__btn" data-action="reconnect"   type="button" title="Reconnecter (déconnecter puis connecter)" aria-label="Reconnecter">${getChatIcon("refresh")}</button>
+      <button class="port-menu__btn port-menu__btn--accent" data-action="multilink" type="button" title="Créer un connecteur multiple" aria-label="Multilink">${getChatIcon("git-branch")}</button>
+      <button class="port-menu__btn port-menu__btn--danger" data-action="delete" type="button" title="Supprimer le nœud" aria-label="Supprimer">${getChatIcon("trash")}</button>
     </div>
     <div class="node-menu" role="toolbar" aria-label="Actions rapides">
-      <button class="node-menu__btn" data-action="connect" type="button" title="Connecter (glisser vers un autre nœud)" aria-label="Connecter">${iconLink()}</button>
-      <button class="node-menu__btn" data-action="properties" type="button" title="Propriétés" aria-label="Propriétés">${iconCog()}</button>
-      <button class="node-menu__btn" data-action="mina" type="button" title="Demander à Mina" aria-label="Demander à Mina">${iconUser()}</button>
-      <button class="node-menu__btn node-menu__btn--danger" data-action="delete" type="button" title="Supprimer (Suppr)" aria-label="Supprimer">${iconTrash()}</button>
+      <button class="node-menu__btn" data-action="connect" type="button" title="Connecter (glisser vers un autre nœud)" aria-label="Connecter">${getChatIcon("link")}</button>
+      <button class="node-menu__btn" data-action="properties" type="button" title="Propriétés" aria-label="Propriétés">${getChatIcon("settings")}</button>
+      <button class="node-menu__btn" data-action="mina" type="button" title="Demander à Mina" aria-label="Demander à Mina">${getChatIcon("user")}</button>
+      <button class="node-menu__btn node-menu__btn--danger" data-action="delete" type="button" title="Supprimer (Suppr)" aria-label="Supprimer">${getChatIcon("trash")}</button>
     </div>
   `;
 

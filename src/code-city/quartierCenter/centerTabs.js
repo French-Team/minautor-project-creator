@@ -17,7 +17,9 @@
  */
 
 import { getState, actions } from '../state.js';
-import { triggerFimCompletion, insertFimCompletion, isFimAvailable } from '../ai/fimHandler.js';
+
+import { getChatIcon } from "../chatIcons.js";
+import { escapeHtml } from '../utils/html.js';
 
 const VALID_TABS = ['editor', 'preview', 'code', 'properties'];
 let activeTab = 'editor';
@@ -126,7 +128,7 @@ function createFimFloatingButton() {
   fimFloatingBtn.type = 'button';
   fimFloatingBtn.className = 'fim-floating-btn';
   fimFloatingBtn.title = 'Compléter la sélection (Ctrl+Shift+C)';
-  fimFloatingBtn.innerHTML = '<span class="fim-floating-btn__icon">🤖</span> Compléter';
+  fimFloatingBtn.innerHTML = `<span class="fim-floating-btn__icon">${getChatIcon('bot', 14)}</span> Compléter`;
   fimFloatingBtn.style.display = 'none';
 
   fimStatusEl = document.createElement('span');
@@ -144,12 +146,12 @@ function createFimFloatingButton() {
         fimStatusEl.style.display = 'inline';
         fimFloatingBtn.classList.add('is-loading');
       } else if (type === 'done') {
-        fimStatusEl.textContent = '\u2713 ' + msg;
+        fimStatusEl.innerHTML = `${getChatIcon('check', 11)} ${escapeHtml(msg)}`;
         fimStatusEl.style.display = 'inline';
         fimFloatingBtn.classList.remove('is-loading');
         setTimeout(() => { fimStatusEl.style.display = 'none'; }, 3000);
       } else if (type === 'error') {
-        fimStatusEl.textContent = '\u2717 ' + msg;
+        fimStatusEl.innerHTML = `${getChatIcon('x', 11)} ${escapeHtml(msg)}`;
         fimStatusEl.style.display = 'inline';
         fimFloatingBtn.classList.remove('is-loading');
         setTimeout(() => { fimStatusEl.style.display = 'none'; }, 5000);

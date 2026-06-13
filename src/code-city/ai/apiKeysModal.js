@@ -14,6 +14,8 @@ import { loadEnvKeys, getCachedEnv, getAllKeysForEnvKey, invalidateCache } from 
 import { toast } from './toast.js';
 import { chatCompletion } from './aiClient.js';
 import { getState, actions } from '../state.js';
+import { getChatIcon } from '../chatIcons.js';
+import { escapeHtml } from '../utils/html.js';
 
 let modalEl = null;
 let navigationInterceptor = null;
@@ -54,14 +56,6 @@ function deactivateNavigationGuard() {
 }
 
 // --- Helpers ---
-
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 function maskKey(key) {
   if (!key) return '';
@@ -148,33 +142,19 @@ export async function openApiKeysModal() {
     <div class="api-keys-modal__backdrop"></div>
     <div class="api-keys-modal__dialog">
       <header class="api-keys-modal__header">
-        <h2 id="api-keys-modal-title" class="api-keys-modal__title">🔑 Gestion des clés API</h2>
+        <h2 id="api-keys-modal-title" class="api-keys-modal__title">${getChatIcon('key', 16)} Gestion des clés API</h2>
         <div class="api-keys-modal__header-actions">
-          <span class="api-keys-modal__rotation-badge" title="Rotation LRU automatique">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-            </svg>
+          <span class="api-keys-modal__rotation-badge" title="Rotation LRU automatique">${getChatIcon('refresh', 12)}
             Rotation LRU
           </span>
-          <button type="button" class="api-keys-modal__icon-btn" data-action="export-keys" title="Exporter les clés en JSON">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-          </button>
-          <button type="button" class="api-keys-modal__close" aria-label="Fermer">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 6L6 18M6 6l12 12"/>
-            </svg>
-          </button>
+          <button type="button" class="api-keys-modal__icon-btn" data-action="export-keys" title="Exporter les clés en JSON">${getChatIcon('download', 14)}</button>
+          <button type="button" class="api-keys-modal__close" aria-label="Fermer">${getChatIcon('x', 16)}</button>
         </div>
       </header>
       <div class="api-keys-modal__body">
         ${keysHtml}
         <div class="api-keys-modal__actions">
-          <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 5v14M5 12h14"/>
-            </svg>
+          <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">${getChatIcon('plus', 14)}
             Ajouter une clé API
           </button>
           ${renderEnvInfo()}
@@ -222,10 +202,7 @@ function handleEscape(e) {
 
 function renderEnvInfo() {
   return `
-    <div class="api-keys-modal__env-info">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-      </svg>
+    <div class="api-keys-modal__env-info">${getChatIcon('info', 12)}
       Les clés sont stockées dans <code>.env</code>. Plusieurs clés = rotation LRU automatique.
     </div>
   `;
@@ -258,7 +235,7 @@ async function renderKeysList() {
   if (providerData.length === 0) {
     return `
       <div class="api-keys-modal__empty">
-        <div class="api-keys-modal__empty-icon">🔐</div>
+        <div class="api-keys-modal__empty-icon">${getChatIcon('lock', 32)}</div>
         <div class="api-keys-modal__empty-text">Aucune clé API enregistrée.</div>
         <div class="api-keys-modal__empty-hint">Ajoute une clé pour l'utiliser avec tes providers. Plusieurs clés = rotation automatique.</div>
       </div>
@@ -285,12 +262,8 @@ function renderProviderItem(provider) {
         </div>
         <div class="api-keys-modal__provider-meta">
           <span class="api-keys-modal__key-count" title="Rotation LRU">${countLabel}</span>
-          ${keyCount > 1 ? '<span class="api-keys-modal__rotation-indicator" title="Rotation activée">🔄</span>' : ''}
-          <button type="button" class="api-keys-modal__add-key-btn" data-action="add-key-for-provider" data-env-key="${provider.envKey}" title="Ajouter une autre clé">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 5v14M5 12h14"/>
-            </svg>
-          </button>
+          ${keyCount > 1 ? `<span class="api-keys-modal__rotation-indicator" title="Rotation activée">${getChatIcon('refresh-cw', 12)}</span>` : ''}
+          <button type="button" class="api-keys-modal__add-key-btn" data-action="add-key-for-provider" data-env-key="${provider.envKey}" title="Ajouter une autre clé">${getChatIcon('plus', 12)}</button>
         </div>
       </div>
       <div class="api-keys-modal__keys-list">
@@ -312,16 +285,8 @@ function renderKeyItem(baseEnvKey, keyInfo, displayIndex) {
         <code>${escapeHtml(maskKey(keyInfo.value))}</code>
       </div>
       <div class="api-keys-modal__key-actions">
-        <button type="button" class="api-keys-modal__action-btn" data-action="view-key" data-key="${keyInfo.key}" title="Voir la clé complète">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-          </svg>
-        </button>
-        <button type="button" class="api-keys-modal__action-btn api-keys-modal__action-btn--danger" data-action="delete-key" data-key="${keyInfo.key}" title="Supprimer cette clé">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>
-          </svg>
-        </button>
+        <button type="button" class="api-keys-modal__action-btn" data-action="view-key" data-key="${keyInfo.key}" title="Voir la clé complète">${getChatIcon('eye', 14)}</button>
+        <button type="button" class="api-keys-modal__action-btn api-keys-modal__action-btn--danger" data-action="delete-key" data-key="${keyInfo.key}" title="Supprimer cette clé">${getChatIcon('trash', 14)}</button>
       </div>
     </div>
   `;
@@ -386,7 +351,7 @@ function showAddKeyForm(preSelectedEnvKey) {
     const newKeyName = `${selectedEnvKey}_${suffix}`;
     hintHtml = `
       <div class="api-keys-modal__form-hint">
-        <span class="api-keys-modal__hint-icon">🔄</span>
+        <span class="api-keys-modal__hint-icon">${getChatIcon('refresh-cw', 14)}</span>
         Rotation LRU : cette clé sera la <strong>clé #${existingKeys.length + 1}</strong> pour ce provider.
         <br/>Sera enregistrée comme <code>${newKeyName}</code>
       </div>
@@ -394,7 +359,7 @@ function showAddKeyForm(preSelectedEnvKey) {
   } else {
     hintHtml = `
       <div class="api-keys-modal__form-hint">
-        <span class="api-keys-modal__hint-icon">📝</span>
+        <span class="api-keys-modal__hint-icon">${getChatIcon('file-edit', 14)}</span>
         Première clé pour ce provider. Ajoute d'autres clés ensuite pour activer la rotation LRU.
       </div>
     `;
@@ -437,13 +402,13 @@ function showAddKeyForm(preSelectedEnvKey) {
     if (hintEl) {
       if (isAdditional) {
         hintEl.innerHTML = `
-          <span class="api-keys-modal__hint-icon">🔄</span>
+          <span class="api-keys-modal__hint-icon">${getChatIcon('refresh-cw', 14)}</span>
           Rotation LRU : cette clé sera la <strong>clé #${keys.length + 1}</strong> pour ce provider.
           <br/>Sera enregistrée comme <code>${newKeyName}</code>
         `;
       } else {
         hintEl.innerHTML = `
-          <span class="api-keys-modal__hint-icon">📝</span>
+          <span class="api-keys-modal__hint-icon">${getChatIcon('file-edit', 14)}</span>
           Première clé pour ce provider. Ajoute d'autres clés ensuite pour activer la rotation LRU.
         `;
       }
@@ -477,11 +442,7 @@ async function viewKey(key) {
         <div class="api-keys-modal__readonly api-keys-modal__readonly--key">
           <code>${escapeHtml(value)}</code>
           ${value ? `
-          <button type="button" class="api-keys-modal__copy-btn" data-action="copy-key" data-key-value="${escapeHtml(value)}" title="Copier">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-            </svg>
-          </button>
+          <button type="button" class="api-keys-modal__copy-btn" data-action="copy-key" data-key-value="${escapeHtml(value)}" title="Copier">${getChatIcon('copy', 12)}</button>
           ` : ''}
         </div>
       </div>
@@ -572,7 +533,7 @@ async function saveKey(event) {
     
     invalidateCache();
     await loadEnvKeys();
-    toast.success(`✅ Clé API validée et sauvegardée !`);
+    toast.success(`Clé API validée et sauvegardée !`);
     
     // Notifier le provider panel si le provider actif vient d'obtenir une clé
     if (envKey) notifyProviderPanelOnKeyChange(envKey);
@@ -586,13 +547,13 @@ async function saveKey(event) {
     // Message d'erreur explicatif
     const errorMsg = err.message || '';
     if (errorMsg.includes('401') || errorMsg.includes('No cookie auth') || errorMsg.includes('Invalid API key')) {
-      toast.error(`❌ Clé API invalide ou expirée`);
+      toast.error(`Clé API invalide ou expirée`);
     } else if (errorMsg.includes('429') || errorMsg.includes('Rate limit')) {
-      toast.error(`⏳ Rate limit — la clé semble valide mais le provider limite les requêtes`);
+      toast.error(`Rate limit — la clé semble valide mais le provider limite les requêtes`);
     } else if (errorMsg.includes('TIMEOUT') || errorMsg.includes('timeout')) {
-      toast.error(`⏱️ Timeout — le provider met trop de temps à répondre`);
+      toast.error(`Timeout — le provider met trop de temps à répondre`);
     } else {
-      toast.error(`❌ Erreur lors du test: ${err.message}`);
+      toast.error(`Erreur lors du test: ${err.message}`);
     }
   }
 }
@@ -613,7 +574,7 @@ async function deleteKey(key) {
 
   body.innerHTML = `
     <div class="api-keys-modal__confirm">
-      <div class="api-keys-modal__confirm-icon">⚠️</div>
+      <div class="api-keys-modal__confirm-icon">${getChatIcon('alert-triangle', 32)}</div>
       <div class="api-keys-modal__confirm-title">Supprimer cette clé ?</div>
       <div class="api-keys-modal__confirm-text">
         ${isLastKey 
@@ -653,10 +614,7 @@ async function refreshModal() {
     body.innerHTML = `
       ${keysHtml}
       <div class="api-keys-modal__actions">
-        <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 5v14M5 12h14"/>
-          </svg>
+        <button type="button" class="btn btn--primary api-keys-modal__add-btn" data-action="add-key">${getChatIcon('plus', 14)}
           Ajouter une clé API
         </button>
         ${renderEnvInfo()}

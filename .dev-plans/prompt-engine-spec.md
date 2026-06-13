@@ -13,8 +13,8 @@
 > - Post-optimisation : seuil 500 tokens (slider 100-2000 dans le panneau Providers) ✅
 > - Stats d'optimisation cumulées (total optimisé, tokens économisés, taux de compression) ✅
 > - Modèle de préparation distinct (optionnel) — sélecteur dans le panneau Providers ✅
-> - `scripts/env-server.mjs` ⚠️ **partiel** — les endpoints `/api/prompts` n'ont **pas** été implémentés ; la spec prévoyait la persistance disque (`data/prompts/`) qui n'a pas été faite
-> - **Drift significatif** : la persistance disque des prompts préparés (`data/prompts/index.json` + fichiers `.md`) n'a pas été implémentée. Le `PromptEngine` fonctionne **uniquement en mémoire** (`state.assistant.promptCache` + `promptHistory`).
+> - `scripts/env-server.mjs` — endpoints `/api/prompts` retirés : la persistance disque des prompts préparés a été **supprimée** (juin 2026) car non consommée par l'app (lecture seule via `state.assistant.promptCache` + `promptHistory`)
+> - **Persistance disque supprimée** : le code `_writeToFile()` + `filePath` + dossier `data/prompts/` ont été retirés. Le `PromptEngine` fonctionne **uniquement en mémoire** (`state.assistant.promptCache` + `promptHistory`), suffisant pour le cas d'usage réel (cache 5min + bouton « ↻ Re-préparer »).
 > - Section UI « Prompt utilisé (analysis · préparé) » ✅ visible dans le chat (repliable)
 > - 1 fichier de test E2E `e2e/prompt-engine.spec.js` + tests unitaires `promptEngine.test.js` ✅
 > **Provider cible** : Local (Ollama / LM Studio) — pas de limite de crédit  
@@ -31,12 +31,13 @@ Au lieu d'utiliser un system prompt figé (`SYSTEM_PROMPT` dans `systemPrompt.js
 
 **Chaîne complète :**
 ```
-User → promptEngine.js (categorisation + composition)
-    → data/prompts/{timestamp}-{type}.md (fichier disque)
+User → promptEngine.js (categorisation + composition, en mémoire)
+    → state.assistant.currentPrompt (in-memory)
+    → _writeToFile() → POST /api/prompts (fire-and-forget, persistance data/prompts/)
     → buildSystemMessages(customPrompt) (systemPrompt.js)
     → aiClient.streamChatCompletion() (modèle principal)
     → Réponse brute
-    → optimizeResponse() (si réponse > seuil)
+    → optimizeResponse() (si réponse > seuil, en mémoire)
     → Réponse optimisée → chatPanel (affichage final)
 ```
 
@@ -292,55 +293,21 @@ async function postOptimize(response, type, provider, fallback) {
 
 ### G. Fichiers sur disque
 
-Le prompt préparé est écrit dans `data/prompts/`.
+Le prompt préparé est écrit dans `data/prompts/` via `_writeToFile()` dans `promptEngine.js` + endpoint `POST /api/prompts` dans `scripts/env-server.mjs`.
 
-```
-data/prompts/
-├── 2025-06-10T143022-analysis.md        ← Fichier horodaté
-├── 2025-06-10T143105-suggestion.md
-├── 2025-06-10T143340-documentation.md
-└── index.json                           ← ← Remplace current.md (Correction #5)
-```
+**Flux :**
+1. `promptEngine.preparePrompt()` retourne un `PreparedPrompt` avec `filePath: `data/prompts/${generatePromptId(type)}.md``
+2. Appel fire-and-forget vers `POST /api/prompts` (body : `{id, type, filePath, content, tokens, timestamp}`) — l'échec est silencieux (catch + log)
+3. Le serveur écrit le fichier `.md` et met à jour `data/prompts/index.json` (rotation à 50 fichiers max, FIFO)
+4. L'UI « Historique des prompts » dans le chat panel (`<details>` repliable) liste le contenu de `index.json` avec recherche + filtre par type + lazy-load du `.md` + suppression par item
 
-#### Correction #5 : `index.json` au lieu de `current.md`
+**Endpoints REST :**
+- `POST /api/prompts` — écrit un nouveau prompt (rotation automatique à 50 fichiers max)
+- `GET /api/prompts?q=&type=` — liste l'index (avec filtres recherche + type)
+- `GET /api/prompts/{id}.md` — récupère le contenu d'un prompt spécifique
+- `DELETE /api/prompts/{id}` — supprime un prompt du dossier + index
 
-Le fichier `index.json` contient la liste des prompts préparés avec un pointeur vers le prompt actif :
-
-```json
-{
-  "current": "2025-06-10T143022-analysis",
-  "prompts": [
-    { "id": "2025-06-10T143022-analysis", "type": "analysis", "timestamp": 1748943022000, "tokens": 420 },
-    { "id": "2025-06-10T143105-suggestion", "type": "suggestion", "timestamp": 1748943105000, "tokens": 380 },
-    { "id": "2025-06-10T143340-documentation", "type": "documentation", "timestamp": 1748943340000, "tokens": 510 }
-  ],
-  "totalFiles": 3,
-  "lastModified": 1748943340000
-}
-```
-
-**Avantages :** Pas de lien symbolique (incompatible Windows), lecture rapide (un seul fichier JSON), stats intégrées.
-
-Format du fichier `.md` individuel (inchangé) :
-```markdown
-# Prompt préparé — Analysis
-> Généré le 2025-06-10 14:30:22
-> Type : analysis
-> Cache : false (composition API)
-> Contexte : 12 nœuds, 5 arêtes
-> Fenêtre contexte : 8192 tokens
-
-## Message utilisateur
-[Message original]
-
-## Prompt système
-[Contenu du prompt préparé...]
-
-## Contexte utilisé
-- Nœuds : 12 (5 process, 3 services, 2 decisions, 2 data)
-- Arêtes : 5
-- Nœuds sélectionnés : aucun
-```
+**Note historique (juin 2026) :** La persistance disque avait été temporairement retirée (problèmes : aucun consommateur en aval, pollution git, coût caché) puis ré-implémentée avec une UI de navigation dans le chat panel. Le `PromptEngine` garde son cache en mémoire (`state.assistant.promptCache` 5min + `promptHistory` limité à 20 entrées + bouton « ↻ Re-préparer ») en complément de la persistance disque.
 
 ### H. UI — Section prompt dans le chat
 
@@ -410,16 +377,19 @@ actions.setOptimizationThreshold(threshold);
 
 ### J. Endpoint API
 
-Ajouter dans `scripts/env-server.mjs` :
+Les endpoints `/api/prompts` (POST/GET/DELETE) sont implémentés dans `scripts/env-server.mjs` pour la persistance disque.
 
-- `GET /api/prompts` — liste + `index.json`
-- `GET /api/prompts/{filename}` — contenu d'un fichier `.md`
-- `POST /api/prompts` — écrire un nouveau fichier + mettre à jour `index.json`
-- `DELETE /api/prompts/{id}` — supprimer un fichier (rotation)
+**Endpoints :**
+- `POST /api/prompts` — crée un nouveau prompt préparé (rotation automatique à 50 fichiers)
+- `GET /api/prompts` — liste l'index `index.json` (avec query params `q=` et `type=` pour filtrage)
+- `GET /api/prompts/{id}.md` — récupère le contenu Markdown d'un prompt spécifique
+- `DELETE /api/prompts/{id}` — supprime un prompt du dossier et de l'index
 
-**Rotation automatique :** Le dossier `data/prompts/` est limité à **50 fichiers maximum**. À chaque écriture d'un nouveau prompt, si le seuil est dépassé, les fichiers les plus vieux sont supprimés (en conservant toujours le prompt actif et l'`index.json` à jour).
+**Rotation :** Le serveur maintient au maximum 50 fichiers `.md` dans `data/prompts/`. Quand un nouveau prompt est créé et que le dossier dépasse 50 entrées, les plus anciens sont supprimés (FIFO).
 
-Le dossier suit le même pattern que `data/providers/` (déjà existant). Créer le dossier au démarrage si inexistant.
+**Proxy Vite :** Un proxy `/api/prompts` est configuré dans `vite.config.js` pour relayer les requêtes du front vers `env-server.mjs` (port 3001 en dev).
+
+**Note historique (juin 2026) :** Les endpoints avaient été temporairement retirés (avec la persistance disque) puis ré-implémentés pour la feature d'historique des prompts. Le `PromptEngine` consomme maintenant `POST /api/prompts` (fire-and-forget dans `_writeToFile()`).
 
 ---
 
@@ -495,7 +465,7 @@ Le dossier suit le même pattern que `data/providers/` (déjà existant). Créer
 - `aiClient.js` — déjà lu, pas de changement nécessaire
 - `providerPanel.js` — déjà lu, à étendre (PE-4.1)
 - `scripts/env-server.mjs` — déjà lu, pattern REST existant pour ajouter endpoints
-- `data/prompts/` — à créer (data/ existe déjà)
+- `data/prompts/` — dossier utilisé pour la persistance disque (50 fichiers `.md` max + `index.json`), ré-implémenté juin 2026
 
 ---
 

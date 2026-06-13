@@ -15,7 +15,7 @@
 import { getState, actions } from '../state.js';
 import { getPreset, getCategory } from './providerLoader.js';
 import { getApiKeyForEnvKey, loadEnvKeys } from './envLoader.js';
-import { chatCompletion, fetchModels, testModel } from './aiClient.js';
+import { chatCompletion, fetchModels, testModel, fetchLmStudioServerConfig } from './aiClient.js';
 import { toast } from './toast.js';
 import validationModels from '../data/validation-models.json';
 
@@ -536,6 +536,42 @@ async function runStep3(providerId, preset, myId) {
     debug(`runStep3 - fetchModels terminé, ${loadedModels.length} modèles reçus`);
 
     if (myId !== workflowId) return;
+
+    // Providers locaux : interroger le serveur pour récupérer le nombre de
+    // modèles chargés (= nombre de slots actifs côté LM Studio). Le `n_parallel`
+    // réel n'est pas exposé par l'API, mais chaque modèle chargé occupe 1 slot.
+    // On stocke le résultat sur provider.serverConfig pour affichage dans
+    // la Status zone (comparaison configuré vs réel).
+    if (preset.category === 'local') {
+      try {
+        if (provider.id === 'lmstudio') {
+          const serverInfo = await fetchLmStudioServerConfig(provider);
+          if (serverInfo.ok) {
+            actions.setServerConfig({
+              loadedModels: serverInfo.models,
+              loadedCount: serverInfo.models.length,
+              actualSlots: serverInfo.models.length,
+              n_parallel: serverInfo.n_parallel, // null (non exposé par l'API LM Studio)
+              fetchedAt: Date.now(),
+            });
+            debug(`runStep3 - LM Studio server config: ${serverInfo.models.length} modèles chargés`);
+          }
+        } else if (provider.id === 'ollama') {
+          // Ollama n'a pas de slots, on stocke juste le count de modèles
+          actions.setServerConfig({
+            loadedModels: loadedModels.map((m) => m.id),
+            loadedCount: loadedModels.length,
+            actualSlots: null, // Ollama = séquentiel
+            n_parallel: null,
+            fetchedAt: Date.now(),
+          });
+          debug(`runStep3 - Ollama: ${loadedModels.length} modèles disponibles`);
+        }
+      } catch (err) {
+        debugError('runStep3 serverConfig', err);
+        // Non-bloquant : on continue sans serverConfig
+      }
+    }
 
     if (loadedModels.length === 0) {
       debug('runStep3 - AUCUN modèle reçu');

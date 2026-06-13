@@ -14,7 +14,7 @@
  * La structure HTML de la sidebar (search bar, head) y est aussi définie.
  */
 
-import { getIcon } from '../../../icons.js';
+import { getChatIcon } from '../../../chatIcons.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Palette data                                                              */
@@ -29,7 +29,7 @@ import { getIcon } from '../../../icons.js';
  *
  * Une variante a :
  *   - id   : identifiant unique (slug)
- *   - icon : nom d'icône dans le registre icons.js
+ *   - icon : nom d'icône dans le registre chatIcons.js (cf. getChatIcon)
  *   - color: nom de couleur (cf. CSS data-color="<name>")
  *   - label: libellé court affiché dans le <select> et au drag
  *
@@ -1768,7 +1768,7 @@ function createCard(item) {
   // Met à jour l'icône et le data-color de la carte en fonction de la variante
   const applyVariant = (variantId) => {
     const variant = item.variants.find((v) => v.id === variantId) || initialVariant;
-    iconEl.innerHTML = getIcon(variant.icon);
+    iconEl.innerHTML = getChatIcon(variant.icon);
     el.dataset.color = variant.color;
     el.dataset.variant = variant.id;
     el.dataset.variantIcon = variant.icon;

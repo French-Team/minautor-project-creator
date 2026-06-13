@@ -21,9 +21,9 @@
     "test:e2e:nightly": "npx playwright test --grep @slow"
   },
   "dependencies": {
-    "@heroicons/react": "^2.2.0",
     "highlight.js": "^11.11.1",
     "jszip": "^3.10.1",
+    "lucide-static": "^1.17.0",
     "marked": "^18.0.5",
     "marked-highlight": "^2.2.4",
     "mermaid": "^10.9.1"

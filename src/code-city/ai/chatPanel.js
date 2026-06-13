@@ -18,13 +18,16 @@ import { getState, actions, subscribe } from '../state.js';
 import { streamChatCompletion, fetchLocalModels } from './aiClient.js';
 import { buildSystemMessages } from './systemPrompt.js';
 import { trimHistory } from './chatHistory.js';
-import { QUICK_ACTION_CATEGORIES, ACTION_ICONS } from './quickActions.js';
+import { QUICK_ACTION_CATEGORIES, getActionIcon } from './quickActions.js';
+import { toast } from './toast.js';
 import { openProviderPanel } from './providerPanel.js';
 import { getPreset, getAllPresets } from './providerLoader.js';
 import { renderMarkdown, renderStreamingMarkdown } from './markdownRenderer.js';
 import { PromptEngine, hashContext, DEFAULT_OPTIMIZATION_THRESHOLD } from './promptEngine.js';
 import { estimateTokens } from './chatHistory.js';
 import { traceChat } from './traceLogger.js';
+import { getChatIcon, getChatIconCheckBold } from '../chatIcons.js';
+import { escapeHtml } from '../utils/html.js';
 
 /* ---------- Provider Greek names ---------- */
 
@@ -48,9 +51,11 @@ let typewriterTimer = null;     // Timer pour effet typewriter (10ms) — ajout 
 let markdownSyncTimer = null;   // Timer pour sync Markdown (500ms) — rendu formaté
 let displayedLength = 0;         // Nb de caractères déjà affichés dans la bulle
 let scrollThrottleTimer = null;  // Throttle pour scrollToBottom (un seul rAF à la fois)
-let streamStartTime = null; // Timestamp de début du streaming
 let streamTokenCount = 0; // Nombre de tokens reçus pendant le streaming
 let streamStatsTimer = null; // Timer pour rafraîchir l'indicateur stats
+let streamStartTime = 0; // Timestamp de début du streaming (pour affichage temps écoulé)
+let progressPct = 0; // Pourcentage actuel de la jauge (0-100)
+let progressTimer = null; // Timer pour le pattern de jauge (indépendant du token count)
 
 // PromptEngine
 let promptEngine = null;
@@ -65,7 +70,7 @@ let lastCanvasHash = '';       // Dernier hash du canvas (pour détection de cha
  * Initialise le panneau chat (câble les events, prépare le DOM).
  */
 export async function initializeChatPanel() {
-  console.log('💬 Initialisation du panneau chat…');
+  console.log('[Chat] Initialisation du panneau chat…');
 
   try {
     const root = document.getElementById('app-chat');
@@ -129,13 +134,19 @@ export async function initializeChatPanel() {
       });
     }
 
-    // Câble la délégation de clic sur le body des messages
-    // NOTE: handleInputKeydown est attaché directement au textarea dans renderInputArea
-    // car #chat-input est dans #chat-input-area (sibling de #app-chat-body), pas enfant.
-    const msgBody = panelEl.querySelector('#app-chat-body');
-    if (msgBody) {
-      msgBody.addEventListener('click', handleChatBodyClick);
-    }
+  // Câble la délégation de clic sur le body des messages
+  // NOTE: handleInputKeydown est attaché directement au textarea dans renderInputArea
+  // car #chat-input est dans #chat-input-area (sibling de #app-chat-body), pas enfant.
+  const msgBody = panelEl.querySelector('#app-chat-body');
+  if (msgBody) {
+    // Click handler — les history items sont maintenant dans #app-chat-topbar
+  // (et non plus dans #app-chat-body), donc on attache sur panelEl pour
+  // capter les clics à la fois du topbar ET du body.
+  panelEl.addEventListener('click', handleChatBodyClick);
+  }
+
+  // Câble les filtres de l'historique des prompts
+  bindPromptHistoryFilters();
 
     // Câble la barre de providers dans le header
     const providerBar = document.getElementById('app-chat-provider-bar');
@@ -172,9 +183,9 @@ export async function initializeChatPanel() {
 
     // État initial : fermé
     applyOpenState(root, false);
-    console.log('✅ Panneau chat initialisé (fermé)');
+    console.log('[Chat] Panneau chat initialisé (fermé)');
   } catch (error) {
-    console.error('❌ Erreur initialisation panneau chat:', error);
+    console.error('[Chat] Erreur initialisation panneau chat:', error);
     throw error;
   }
 }
@@ -236,29 +247,8 @@ function applyOpenState(root, open) {
   }
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/**
- * Retourne le HTML SVG pour une icône d'action.
- * @param {string} key - Clé dans ACTION_ICONS
- * @param {number} [size=14] - Taille du SVG
- * @returns {string}
- */
-function getActionIcon(key, size = 14) {
-  const svg = ACTION_ICONS[key];
-  if (!svg) return '';
-  // Ajuster la taille si nécessaire
-  if (size !== 14) {
-    return svg.replace(/width="14"/, `width="${size}"`).replace(/height="14"/, `height="${size}"`);
-  }
-  return svg;
-}
+// getActionIcon est maintenant importé de './quickActions.js' (qui le re-exporte
+// depuis '../chatIcons.js' — source unique des icônes du chat).
 
 /* ---------- Rendering ---------- */
 
@@ -286,13 +276,259 @@ function renderPanelContent() {
     </div>
   `;
 
+  // Remplir la topbar (historique des prompts + stats cumulatives)
+  renderChatTopbar();
+
   // Quick actions
   renderQuickActions();
 
   // Input area
   renderInputArea();
 
+  // Re-câbler les filtres de l'historique (le DOM est reconstruit)
+  bindPromptHistoryFilters();
+
+  // Charger la liste des prompts depuis /api/prompts (asynchrone)
+  refreshPromptHistory();
+
   scrollToBottom();
+}
+
+/* ---------- Historique des prompts (data/prompts/) ---------- */
+
+/**
+ * Rend la section repliable « Historique des prompts ».
+ * La liste est remplie par refreshPromptHistory() après le rendu initial.
+ * @returns {string} HTML de la section
+ */
+function renderPromptHistorySection() {
+  return `
+    <details class="chat-prompt-history" id="chat-prompt-history">
+      <summary class="chat-prompt-history__summary">
+        <span class="chat-prompt-history__icon">${getActionIcon('file-text', 12)}</span>
+        <span class="chat-prompt-history__title">Historique des prompts</span>
+        <span class="chat-prompt-history__count" id="chat-prompt-history__count">…</span>
+      </summary>
+      <div class="chat-prompt-history__content">
+        <div class="chat-prompt-history__filters">
+          <input
+            type="search"
+            class="chat-prompt-history__search"
+            id="chat-prompt-history__search"
+            placeholder="Rechercher dans l'historique…"
+            autocomplete="off"
+          />
+          <select class="chat-prompt-history__type-filter" id="chat-prompt-history__type-filter">
+            <option value="">Tous les types</option>
+            <option value="analysis">Analyse</option>
+            <option value="suggestion">Suggestion</option>
+            <option value="documentation">Documentation</option>
+            <option value="enrichment">Enrichissement</option>
+            <option value="architecture">Architecture</option>
+            <option value="conversation">Conversation</option>
+          </select>
+        </div>
+        <ul class="chat-prompt-history__list" id="chat-prompt-history__list">
+          <li class="chat-prompt-history__loading">Chargement…</li>
+        </ul>
+      </div>
+    </details>
+  `;
+}
+
+/**
+ * Charge la liste des prompts depuis /api/prompts et peuple la liste dans le DOM.
+ * Filtres supportés : ?q= (recherche) et ?type= (filtre par type).
+ * @param {Object} [options]
+ * @param {string} [options.searchQuery]
+ * @param {string} [options.typeFilter]
+ */
+/**
+ * Rend la topbar sticky du chat panel : contient l'historique des prompts
+ * (repliable) + les stats cumulatives d'optimisation + le compteur de streaming
+ * (ajouté dynamiquement par startStreamingStats).
+ * Reste visible pendant que la conversation scroll.
+ *
+ * Si un streaming est en cours, on ne touche pas au DOM (sinon on écraserait
+ * la barre de stats live). On ne met à jour que les stats cumulatives.
+ */
+function renderChatTopbar() {
+  const topbar = panelEl?.querySelector('#app-chat-topbar');
+  if (!topbar) return;
+  if (panelEl?.querySelector('#chat-stream-stats')) {
+    // Streaming en cours : ne mettre à jour que les stats cumulatives
+    const oldCumulative = topbar.querySelector('#chat-cumulative-stats');
+    const newCumulative = renderCumulativeStats();
+    if (oldCumulative) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = newCumulative;
+      const newEl = tmp.firstElementChild;
+      if (newEl) oldCumulative.replaceWith(newEl);
+    } else {
+      topbar.insertAdjacentHTML('beforeend', newCumulative);
+    }
+    return;
+  }
+  topbar.innerHTML = `
+    ${renderPromptHistorySection()}
+    ${renderCumulativeStats()}
+  `;
+}
+
+/**
+ * Rend les stats cumulatives d'optimisation (toujours visibles).
+ * Affiche : nombre total d'optimisations + tokens économisés + taux de compression moyen.
+ */
+function renderCumulativeStats() {
+  const stats = getState().assistant?.optimizationStats || { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 };
+  const totalOpt = stats.totalOptimized || 0;
+  const saved = stats.totalTokensSaved || 0;
+  const ratio = Math.round(stats.averageCompression || 0);
+  if (totalOpt === 0) {
+    return `
+      <div class="chat-cumulative-stats chat-cumulative-stats--empty" id="chat-cumulative-stats">
+        <span class="chat-cumulative-stats__icon">${getActionIcon('trending-up', 12)}</span>
+        <span class="chat-cumulative-stats__text">Stats d'optimisation : aucune réponse optimisée pour l'instant</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="chat-cumulative-stats" id="chat-cumulative-stats" title="Statistiques cumulées des optimisations de réponses">
+      <span class="chat-cumulative-stats__icon">${getActionIcon('trending-up', 12)}</span>
+      <span class="chat-cumulative-stats__text">
+        <strong>${totalOpt}</strong> réponse${totalOpt > 1 ? 's' : ''} optimisée${totalOpt > 1 ? 's' : ''} ·
+        <strong>${saved.toLocaleString('fr-FR')}</strong> tok économisés ·
+        <strong>${ratio}%</strong> de compression
+      </span>
+    </div>
+  `;
+}
+
+async function refreshPromptHistory({ searchQuery = '', typeFilter = '' } = {}) {
+  const listEl = panelEl?.querySelector('#chat-prompt-history__list');
+  const countEl = panelEl?.querySelector('#chat-prompt-history__count');
+  if (!listEl) return;
+
+  try {
+    const params = new URLSearchParams();
+    if (searchQuery) params.set('q', searchQuery);
+    if (typeFilter) params.set('type', typeFilter);
+
+    const url = '/api/prompts' + (params.toString() ? '?' + params.toString() : '');
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      listEl.innerHTML = '<li class="chat-prompt-history__error">Erreur de chargement.</li>';
+      return;
+    }
+
+    const index = await resp.json();
+    const prompts = index.prompts || [];
+
+    if (countEl) {
+      countEl.textContent = `(${prompts.length})`;
+    }
+
+    if (prompts.length === 0) {
+      listEl.innerHTML = '<li class="chat-prompt-history__empty">Aucun prompt sauvegardé.</li>';
+      return;
+    }
+
+    // Trier par timestamp décroissant (plus récent d'abord)
+    const sorted = [...prompts].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    listEl.innerHTML = sorted.map(p => renderPromptHistoryItem(p)).join('');
+  } catch (err) {
+    console.warn('[Chat] Échec chargement historique prompts:', err.message);
+    listEl.innerHTML = '<li class="chat-prompt-history__error">Erreur de chargement.</li>';
+  }
+}
+
+/**
+ * Rend un élément de la liste d'historique.
+ * @param {Object} p - Entrée index.json : { id, type, timestamp, tokens, category }
+ * @returns {string} HTML
+ */
+function renderPromptHistoryItem(p) {
+  const typeLabels = {
+    analysis: 'Analyse',
+    suggestion: 'Suggestion',
+    documentation: 'Documentation',
+    enrichment: 'Enrichissement',
+    architecture: 'Architecture',
+    conversation: 'Conversation',
+  };
+  const typeLabel = typeLabels[p.type] || p.type || '?';
+  const tokens = p.tokens ? `${p.tokens} tok` : '';
+  const time = p.timestamp ? formatTime(p.timestamp) : '';
+  const date = p.timestamp ? new Date(p.timestamp).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : '';
+
+  return `
+    <li class="chat-prompt-history__item" data-prompt-id="${escapeHtml(p.id)}">
+      <details class="chat-prompt-history__item-details">
+        <summary class="chat-prompt-history__item-summary">
+          <span class="chat-prompt-history__item-type chat-prompt-history__item-type--${escapeHtml(p.type || 'unknown')}">${escapeHtml(typeLabel)}</span>
+          <span class="chat-prompt-history__item-meta">
+            ${date ? `<span class="chat-prompt-history__item-date">${escapeHtml(date)}</span>` : ''}
+            ${time ? `<span class="chat-prompt-history__item-time">${escapeHtml(time)}</span>` : ''}
+            ${tokens ? `<span class="chat-prompt-history__item-tokens">${escapeHtml(tokens)}</span>` : ''}
+          </span>
+          <button type="button" class="chat-prompt-history__item-delete" data-action="delete-prompt" data-prompt-id="${escapeHtml(p.id)}" title="Supprimer ce prompt" aria-label="Supprimer ce prompt">${getActionIcon('trash', 12)}</button>
+        </summary>
+        <div class="chat-prompt-history__item-content" data-prompt-content-id="${escapeHtml(p.id)}">
+          <span class="chat-prompt-history__item-loading">Chargement du contenu…</span>
+        </div>
+      </details>
+    </li>
+  `;
+}
+
+/**
+ * Charge le contenu d'un prompt spécifique depuis /api/prompts/{id}.md
+ * et l'injecte dans l'élément de liste correspondant.
+ * @param {string} id - ID du prompt (timestamp-type)
+ */
+async function loadPromptContent(id) {
+  const contentEl = panelEl?.querySelector(`[data-prompt-content-id="${CSS.escape(id)}"]`);
+  if (!contentEl) return;
+
+  try {
+    const resp = await fetch(`/api/prompts/${encodeURIComponent(id)}.md`);
+    if (!resp.ok) {
+      contentEl.innerHTML = '<span class="chat-prompt-history__item-error">Contenu introuvable.</span>';
+      return;
+    }
+    const text = await resp.text();
+    contentEl.innerHTML = `<pre class="chat-prompt-history__item-pre">${escapeHtml(text)}</pre>`;
+  } catch (err) {
+    contentEl.innerHTML = `<span class="chat-prompt-history__item-error">Erreur : ${escapeHtml(err.message)}</span>`;
+  }
+}
+
+/**
+ * Supprime un prompt via DELETE /api/prompts/{id}.
+ * @param {string} id - ID du prompt à supprimer
+ */
+async function deletePromptFromHistory(id) {
+  // Suppression directe sans confirmation JS (UX moderne) + feedback toast
+
+  try {
+    const resp = await fetch(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!resp.ok) {
+      console.warn('[Chat] Échec suppression prompt:', resp.status);
+      toast.error('Impossible de supprimer le prompt');
+      return;
+    }
+    const searchEl = panelEl?.querySelector('#chat-prompt-history__search');
+    const typeEl = panelEl?.querySelector('#chat-prompt-history__type-filter');
+    await refreshPromptHistory({
+      searchQuery: searchEl?.value || '',
+      typeFilter: typeEl?.value || '',
+    });
+    toast.success('Prompt supprimé');
+  } catch (err) {
+    console.warn('[Chat] Échec suppression prompt:', err.message);
+    toast.error('Erreur réseau lors de la suppression');
+  }
 }
 
 /**
@@ -328,21 +564,12 @@ function renderPromptSection(prepared) {
   details.id = sectionId;
   details.innerHTML = `
     <summary class="chat-prompt-section__summary">
-      <span class="chat-prompt-section__title">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/>
-          <line x1="16" y1="17" x2="8" y2="17"/>
-          <polyline points="10 9 9 9 8 9"/>
-        </svg>
-        Prompt utilisé (${typeLabel}${cacheLabel})
-      </span>
+      <span class="chat-prompt-section__title">${getChatIcon('file-text', 12)} Prompt utilisé (${typeLabel}${cacheLabel})</span>
       <span class="chat-prompt-section__meta">
-        <span class="chat-prompt-section__tokens">📏 ${estTokens} tok</span>
+        <span class="chat-prompt-section__tokens">${getActionIcon('bar-chart', 11)} ${estTokens} tok</span>
         ${prepared.cached ? '<span class="chat-prompt-section__badge chat-prompt-section__badge--cached">cache</span>' : ''}
-        ${prepared.apiEnhanced ? '<span class="chat-prompt-section__badge chat-prompt-section__badge--enhanced">✨ amélioré</span>' : ''}
-        <button type="button" class="chat-prompt-section__reprepare" data-action="re-prepare-prompt" title="Re-préparer le prompt">↻</button>
+        ${prepared.apiEnhanced ? `<span class="chat-prompt-section__badge chat-prompt-section__badge--enhanced">${getActionIcon('zap', 10)} amélioré</span>` : ''}
+        <button type="button" class="chat-prompt-section__reprepare" data-action="re-prepare-prompt" title="Re-préparer le prompt" aria-label="Re-préparer le prompt">${getActionIcon('refresh', 12)}</button>
       </span>
     </summary>
     <div class="chat-prompt-section__content">
@@ -416,12 +643,7 @@ function renderHistoryMessage(msg) {
       <div class="chat-msg chat-msg--user" data-msg-role="user">
         <div class="chat-msg__bubble">${escapeHtml(msg.content)}</div>
         <div class="chat-msg__actions">
-          <button type="button" class="chat-msg__edit-btn" data-action="edit-message" title="Modifier ce message" aria-label="Modifier ce message">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-          </button>
+          <button type="button" class="chat-msg__edit-btn" data-action="edit-message" title="Modifier ce message" aria-label="Modifier ce message">${getChatIcon('edit', 12)}</button>
           ${msg.timestamp ? `<span class="chat-msg__time">${formatTime(msg.timestamp)}</span>` : ''}
         </div>
       </div>
@@ -432,20 +654,8 @@ function renderHistoryMessage(msg) {
       <div class="chat-msg chat-msg--assistant">
         <div class="chat-msg__bubble">${renderMarkdown(msg.content)}</div>
         <div class="chat-msg__actions">
-          <button type="button" class="chat-regen-btn" data-action="regenerate" title="Régénérer la réponse">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 2v6h-6"/>
-              <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
-              <path d="M3 22v-6h6"/>
-              <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
-            </svg>
-          </button>
-          <button type="button" class="chat-copy-btn" data-action="copy" data-text="${escapeHtml(msg.content)}" title="Copier le message">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2"/>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-            </svg>
-          </button>
+          <button type="button" class="chat-regen-btn" data-action="regenerate" title="Régénérer la réponse">${getChatIcon('rotate-ccw', 12)}</button>
+          <button type="button" class="chat-copy-btn" data-action="copy" data-text="${escapeHtml(msg.content)}" title="Copier le message">${getChatIcon('copy', 12)}</button>
           ${msg.timestamp ? `<span class="chat-msg__time">${formatTime(msg.timestamp)}</span>` : ''}
         </div>
       </div>
@@ -509,17 +719,8 @@ function renderInputArea() {
         ${disabled ? 'disabled' : ''}
       ></textarea>
     </div>
-    <button type="button" class="chat-send-btn" id="chat-send-btn" ${disabled ? 'disabled' : ''} title="Envoyer (Enter)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="22" y1="2" x2="11" y2="13"></line>
-        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-      </svg>
-    </button>
-    <button type="button" class="chat-stop-btn" id="chat-stop-btn" style="display:none;" title="Arrêter la génération">
-      <svg viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="6" width="12" height="12" rx="2"/>
-      </svg>
-    </button>
+    <button type="button" class="chat-send-btn" id="chat-send-btn" ${disabled ? 'disabled' : ''} title="Envoyer (Enter)">${getChatIcon('send', 16)}</button>
+    <button type="button" class="chat-stop-btn" id="chat-stop-btn" style="display:none;" title="Arrêter la génération">${getChatIcon('square', 16)}</button>
   `;
 
   // Auto-resize + Enter key handler sur le textarea
@@ -605,6 +806,65 @@ function handleChatBodyClick(e) {
   if (editBtn) {
     handleEditMessage(editBtn);
     return;
+  }      // Toggle history item (lazy-load content)
+      // Note : le click event fire AVANT le toggle natif du <details>.
+      // On vérifie donc !historyItemDetails.open (va s'ouvrir) et non
+      // historyItemDetails.open (déjà ouvert). Cela déclenche le chargement
+      // dès le PREMIER clic, pas le second.
+      // On exclut aussi le bouton supprimer pour ne pas court-circuiter
+      // le handler deletePromptFromHistory ci-dessous.
+      const historyItemDetails = e.target.closest('.chat-prompt-history__item-details');
+      if (historyItemDetails && !e.target.closest('[data-action="delete-prompt"]')) {
+        const item = historyItemDetails.closest('.chat-prompt-history__item');
+        const id = item?.dataset.promptId;
+        if (id && !historyItemDetails.open) {
+          const contentEl = historyItemDetails.querySelector('[data-prompt-content-id]');
+          if (contentEl && contentEl.querySelector('.chat-prompt-history__item-loading')) {
+            loadPromptContent(id);
+          }
+        }
+        return;
+      }
+
+  // Delete prompt from history
+  const deletePromptBtn = e.target.closest('[data-action="delete-prompt"]');
+  if (deletePromptBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = deletePromptBtn.dataset.promptId;
+    if (id) deletePromptFromHistory(id);
+    return;
+  }
+}
+
+/**
+ * Câble les filtres de l'historique (recherche + type) après renderPanelContent.
+ * Appelé depuis initializeChatPanel() + après chaque render.
+ */
+function bindPromptHistoryFilters() {
+  const searchEl = panelEl?.querySelector('#chat-prompt-history__search');
+  const typeEl = panelEl?.querySelector('#chat-prompt-history__type-filter');
+  if (searchEl && !searchEl.dataset.bound) {
+    let searchTimer = null;
+    searchEl.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        refreshPromptHistory({
+          searchQuery: searchEl.value,
+          typeFilter: typeEl?.value || '',
+        });
+      }, 200); // Debounce 200ms
+    });
+    searchEl.dataset.bound = '1';
+  }
+  if (typeEl && !typeEl.dataset.bound) {
+    typeEl.addEventListener('change', () => {
+      refreshPromptHistory({
+        searchQuery: searchEl?.value || '',
+        typeFilter: typeEl.value,
+      });
+    });
+    typeEl.dataset.bound = '1';
   }
 }
 
@@ -661,6 +921,29 @@ async function sendMessage(text, options = {}) {
 
       // Afficher la section prompt dans le DOM
       renderPromptSection(prepared);
+
+      // Rafraîchir l'historique après 500ms (laisse le temps au POST /api/prompts
+      // fire-and-forget de compléter l'écriture disque + rotation)
+      // Fix: la liste était vide car refreshPromptHistory n'était appelé qu'à
+      // l'ouverture du panel, jamais après chaque envoi.
+      const refreshHistoryAfter = (delay) => {
+        setTimeout(async () => {
+          const searchEl = panelEl?.querySelector('#chat-prompt-history__search');
+          const typeEl = panelEl?.querySelector('#chat-prompt-history__type-filter');
+          const before = panelEl?.querySelector('#chat-prompt-history__count')?.textContent;
+          await refreshPromptHistory({
+            searchQuery: searchEl?.value || '',
+            typeFilter: typeEl?.value || '',
+          });
+          // Si la liste est toujours vide mais qu'on vient d'envoyer un prompt,
+          // réessayer une fois à +800ms (le POST peut être lent en dev)
+          const after = panelEl?.querySelector('#chat-prompt-history__count')?.textContent;
+          if ((before === '(0)' || before === '…') && after === '(0)') {
+            refreshHistoryAfter(800);
+          }
+        }, delay);
+      };
+      refreshHistoryAfter(500);
     } catch (err) {
       console.warn('[Chat] Échec préparation prompt:', err.message);
       // Continue sans prompt préparé (fallback SYSTEM_PROMPT)
@@ -687,10 +970,19 @@ async function sendMessage(text, options = {}) {
     const promptMode = currentPrompt?.type === 'conversation' ? 'enrich' : 'replace';
     const systemMessages = buildSystemMessages(graph, customPrompt, promptMode);
     const history = getState().assistant.chatHistory || [];
+    // Note : le message `text` a déjà été push dans `history` (via
+    // actions.pushChatMessage) plus haut dans cette fonction, donc
+    // `history.map(...)` l'inclut DÉJÀ. Ne PAS le rajouter à la fin
+    // dans ce cas, sinon le prompt utilisateur est envoyé en double
+    // à LM Studio (bug observé dans les logs serveur).
+    //
+    // Exception : si `skipUserMessage` est true (régénération / édition
+    // puis renvoi), le message N'A PAS été push dans `history` — il faut
+    // donc l'ajouter explicitement à la fin de `allMessages`.
     const allMessages = [
       ...systemMessages,
       ...history.map(m => ({ role: m.role, content: m.content })),
-      { role: 'user', content: text },
+      ...(skipUserMessage ? [{ role: 'user', content: text }] : []),
     ];
 
     // [CHAT] Trace streamChatCompletion CALL
@@ -1134,20 +1426,8 @@ function addCopyButtonToBubble(msgDiv, rawContent) {
   const actionsDiv = document.createElement('div');
   actionsDiv.className = 'chat-msg__actions';
   actionsDiv.innerHTML = `
-    <button type="button" class="chat-regen-btn" data-action="regenerate" title="Régénérer la réponse">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 2v6h-6"/>
-        <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
-        <path d="M3 22v-6h6"/>
-        <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
-      </svg>
-    </button>
-    <button type="button" class="chat-copy-btn" data-action="copy" data-text="${escapeHtml(rawContent)}" title="Copier le message">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="9" width="13" height="13" rx="2"/>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-      </svg>
-    </button>
+    <button type="button" class="chat-regen-btn" data-action="regenerate" title="Régénérer la réponse">${getChatIcon('rotate-ccw', 12)}</button>
+    <button type="button" class="chat-copy-btn" data-action="copy" data-text="${escapeHtml(rawContent)}" title="Copier le message">${getChatIcon('copy', 12)}</button>
   `;
   msgDiv.appendChild(actionsDiv);
 }
@@ -1165,7 +1445,7 @@ async function handleCopyMessage(btn) {
     // Feedback visuel : remplacer l'icône par ✓ temporairement
     btn.classList.add('chat-copy-btn--copied');
     const originalHTML = btn.innerHTML;
-    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+    btn.innerHTML = getChatIconCheckBold(12);
     setTimeout(() => {
       btn.classList.remove('chat-copy-btn--copied');
       btn.innerHTML = originalHTML;
@@ -1366,6 +1646,15 @@ async function optimizeLastResponse(bubble, originalContent) {
       if (tokensSaved > 0) {
         actions.updateOptimizationStats(tokensSaved, originalTokens);
       }
+      // Rafraîchir l'affichage des stats cumulatives dans la topbar
+      const cumulativeEl = panelEl?.querySelector('#chat-cumulative-stats');
+      if (cumulativeEl) {
+        const newHtml = renderCumulativeStats();
+        const tmp = document.createElement('div');
+        tmp.innerHTML = newHtml;
+        const newEl = tmp.firstElementChild;
+        if (newEl) cumulativeEl.replaceWith(newEl);
+      }
     } else {
       // [CHAT] Trace optimizeLastResponse BADGE no-change — optimisation sans changement
       traceChat('optimizeLastResponse BADGE no-change', {
@@ -1400,10 +1689,10 @@ function showOptimizationBadge(bubble, state) {
   if (old) old.remove();
 
   const labels = {
-    optimizing: '⚡ Optimisation en cours...',
-    done: '⚡ Optimisé',
-    'no-change': '✓ Déjà concis',
-    failed: '⚠️ Optimisation non disponible',
+    optimizing: 'Optimisation en cours...',
+    done: 'Optimisé',
+    'no-change': 'Déjà concis',
+    failed: 'Optimisation non disponible',
   };
 
   const label = labels[state] || '';
@@ -1441,38 +1730,116 @@ function showOptimizationBadge(bubble, state) {
  * avec une barre de progression. Met à jour toutes les 200ms.
  */
 function startStreamingStats() {
-  streamStartTime = Date.now();
   streamTokenCount = 0;
+  streamStartTime = Date.now();
+  progressPct = 0;
 
   // Supprimer un ancien stats bar s'il existe
   const old = panelEl?.querySelector('.chat-stream-stats');
   if (old) old.remove();
 
-  // Créer l'élément stats dans le header (entre le centre et les boutons)
-  const header = panelEl?.querySelector('.app__chat-header');
-  if (!header) return;
+  // Créer l'élément stats dans la topbar (à côté de l'historique des prompts)
+  // pour qu'il reste visible quand la conversation grandit.
+  const topbar = panelEl?.querySelector('#app-chat-topbar');
+  if (!topbar) return;
 
   const statsBar = document.createElement('div');
   statsBar.className = 'chat-stream-stats';
   statsBar.id = 'chat-stream-stats';
   statsBar.innerHTML = `
-    <span class="chat-stream-stats__icon">${getActionIcon('zap', 11)}</span>
-    <span class="chat-stream-stats__text">0 tok · 0.0s</span>
+    <span class="chat-stream-stats__pulse" aria-hidden="true"></span>
+    <span class="chat-stream-stats__icon">${getActionIcon('zap', 12)}</span>
+    <span class="chat-stream-stats__metrics" aria-live="polite" aria-atomic="true"><span class="chat-stream-stats__text"><strong class="chat-stream-stats__count">0</strong> <span class="chat-stream-stats__unit">tok</span></span><span class="chat-stream-stats__time-sep" aria-hidden="true">·</span><span class="chat-stream-stats__time">0.0s</span></span>
     <span class="chat-stream-stats__bar"><span class="chat-stream-stats__bar-fill"></span></span>
   `;
 
-  // Insérer dans le header-center (en bas de la colonne, pleine largeur)
-  const center = header.querySelector('.app__chat-header-center');
-  if (center) {
-    center.appendChild(statsBar);
+  // Insérer dans la topbar (avant les stats cumulatives si présentes)
+  const cumulative = topbar.querySelector('.chat-cumulative-stats');
+  if (cumulative) {
+    topbar.insertBefore(statsBar, cumulative);
   } else {
-    header.appendChild(statsBar);
+    topbar.appendChild(statsBar);
   }
 
-  // Timer pour rafraîchir l'affichage
+  // Timer pour rafraîchir l'affichage (compteur de tokens uniquement)
+  // 500ms suffit : l'œil humain ne distingue pas 200ms vs 500ms pour un compteur.
   streamStatsTimer = setInterval(() => {
     updateStreamingStats();
-  }, 200);
+  }, 500);
+
+  // Timer pour le calcul de progression basé sur le temps écoulé — indépendant
+  // du token count. Met à jour la jauge toutes les 800ms via une courbe lisse.
+  progressTimer = setInterval(() => {
+    updateProgressByTime();
+  }, 800);
+
+  // Calcule immédiatement la position initiale (0% au frame 0, sans attendre
+  // le premier tick du timer) pour que la jauge affiche une valeur dès l'instant 0.
+  updateProgressByTime();
+}
+
+/**
+ * Calcule le pourcentage de progression de la jauge en fonction du temps écoulé.
+ * Utilise une courbe exponentielle lissée : 0% → 90% en ~60 secondes.
+ *   - Rapide au début (le modèle "démarre")
+ *   - Ralentit progressivement (le modèle "réfléchit")
+ *   - Asymptote à 90% (ne touche jamais 100% avant la fin réelle)
+ *
+ * Au-delà de 60 secondes, oscille entre 85% et 90% pour signaler "presque fini"
+ * sans jamais prétendre que c'est terminé. La jauge saute à 100% (vert plein)
+ * uniquement quand stopStreamingStats() est appelé, c-à-d quand le modèle a
+ * réellement fini de streamer.
+ *
+ * Valeurs de référence (formule : pct = 90 * (1 - exp(-elapsed / 20))):
+ *   t=1s  → 4%
+ *   t=5s  → 22%
+ *   t=10s → 39%
+ *   t=20s → 59%
+ *   t=30s → 70%
+ *   t=60s → 83%
+ *   t→∞  → 90%
+ */
+function updateProgressByTime() {
+  if (streamStartTime === 0) return;
+  const elapsed = (Date.now() - streamStartTime) / 1000;
+
+  // Phase 1 : montée exponentielle (0 → 90%)
+  let pct = 90 * (1 - Math.exp(-elapsed / 20));
+
+  // Phase 2 : oscillation 85/90% après 60s (respiration "presque fini")
+  if (elapsed > 60) {
+    // Cycle de 2.4s : 1.2s à 85%, 1.2s à 90%
+    const cycle = (elapsed % 2.4) / 2.4;
+    pct = cycle < 0.5 ? 85 : 90;
+  }
+
+  progressPct = Math.round(pct);
+  updateProgressBar(progressPct);
+}
+
+/**
+ * Met à jour la jauge : largeur + couleur qui évolue selon le pourcentage.
+ * @param {number} pct - Pourcentage (0-100)
+ */
+function updateProgressBar(pct) {
+  const statsEl = panelEl?.querySelector('#chat-stream-stats');
+  if (!statsEl) return;
+  const barFill = statsEl.querySelector('.chat-stream-stats__bar-fill');
+  if (!barFill) return;
+  barFill.style.width = `${pct}%`;
+  // Couleur évolue : bleu (froid) → vert (progression) → ambre (chauffage) → rouge (presque fini)
+  // Utilise les tokens CSS du design system pour rester cohérent avec le dark mode
+  let bg;
+  if (pct < 30) {
+    bg = 'linear-gradient(90deg, var(--info, #2563eb), #3b82f6)'; // bleu
+  } else if (pct < 50) {
+    bg = 'linear-gradient(90deg, var(--success, #15a35a), #34d399)'; // vert
+  } else if (pct < 70) {
+    bg = 'linear-gradient(90deg, var(--warning, #d97706), #fbbf24)'; // ambre
+  } else {
+    bg = 'linear-gradient(90deg, var(--danger, #dc2626), #f87171)'; // rouge
+  }
+  barFill.style.background = bg;
 }
 
 /**
@@ -1480,18 +1847,18 @@ function startStreamingStats() {
  */
 function updateStreamingStats() {
   const statsEl = panelEl?.querySelector('#chat-stream-stats');
-  if (!statsEl || !streamStartTime) return;
+  if (!statsEl) return;
 
-  const elapsed = ((Date.now() - streamStartTime) / 1000).toFixed(1);
-  const textEl = statsEl.querySelector('.chat-stream-stats__text');
-  const barFill = statsEl.querySelector('.chat-stream-stats__bar-fill');
+  // Mettre à jour le compteur de tokens (la jauge est gérée
+  // par applyProgressStep() avec son propre timer pour le pattern +30%/-10%)
+  const countEl = statsEl.querySelector('.chat-stream-stats__count');
+  if (countEl) countEl.textContent = streamTokenCount;
 
-  if (textEl) textEl.textContent = `${streamTokenCount} tok · ${elapsed}s`;
-
-  // Barre de progression : augmente avec le temps (max 30s = 100%)
-  if (barFill) {
-    const pct = Math.min((elapsed / 30) * 100, 100);
-    barFill.style.width = `${pct}%`;
+  // Mettre à jour le temps écoulé depuis streamStartTime
+  const timeEl = statsEl.querySelector('.chat-stream-stats__time');
+  if (timeEl && streamStartTime > 0) {
+    const elapsedSec = (Date.now() - streamStartTime) / 1000;
+    timeEl.textContent = `${elapsedSec.toFixed(1)}s`;
   }
 }
 
@@ -1500,20 +1867,27 @@ function updateStreamingStats() {
  * disparaît après 2s (fade out).
  */
 function stopStreamingStats() {
-  if (!streamStatsTimer && !streamStartTime) return; // Déjà arrêté
+  if (!streamStatsTimer && !progressTimer) return; // Déjà arrêté
   if (streamStatsTimer) {
     clearInterval(streamStatsTimer);
     streamStatsTimer = null;
   }
+  if (progressTimer) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+  }
 
-  // Mettre à jour une dernière fois avec le résultat final
+  // Final : jauge à 100% avec couleur "succès" (vert plein)
   const statsEl = panelEl?.querySelector('#chat-stream-stats');
-  if (statsEl && streamStartTime) {
-    const elapsed = ((Date.now() - streamStartTime) / 1000).toFixed(1);
-    const textEl = statsEl.querySelector('.chat-stream-stats__text');
+  if (statsEl) {
+    // Mettre à jour le compteur de tokens et le temps final via la fonction partagée
+    updateStreamingStats();
+    // Set direct à 100% (pas besoin d'appeler updateProgressBar qui serait écrasé)
     const barFill = statsEl.querySelector('.chat-stream-stats__bar-fill');
-    if (textEl) textEl.textContent = `${streamTokenCount} tok · ${elapsed}s`;
-    if (barFill) barFill.style.width = '100%';
+    if (barFill) {
+      barFill.style.width = '100%';
+      barFill.style.background = 'linear-gradient(90deg, #15a35a, #34d399)';
+    }
 
     // Classe finale → déclenche le fade out
     statsEl.classList.add('chat-stream-stats--done');
@@ -1524,8 +1898,9 @@ function stopStreamingStats() {
     }, 2000);
   }
 
-  streamStartTime = null;
   streamTokenCount = 0;
+  streamStartTime = 0;
+  progressPct = 0;
 }
 
 /* ---------- Chat title (Greek names) ---------- */
@@ -1558,15 +1933,10 @@ function updateChatTitle() {
 
 /**
  * Retourne l'icône SVG pour un provider selon son icon type.
+ * Utilise le helper getChatIcon() qui pointe vers lucide-static.
  */
 function getProviderIcon(iconType) {
-  const icons = {
-    cloud: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>`,
-    sparkles: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
-    code: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
-    server: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`,
-  };
-  return icons[iconType] || icons.cloud;
+  return getChatIcon(iconType, 12) || getChatIcon('cloud', 12);
 }
 
 /**

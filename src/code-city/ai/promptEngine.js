@@ -14,6 +14,7 @@ import { getPreset } from './providerLoader.js';
 import { toLocalUrl } from './aiClient.js';
 import { estimateTokens } from './chatHistory.js';
 import { tracePromptEngine, traceOptimizer } from './traceLogger.js';
+import { resolveContextWindow } from './modelContextResolver.js';
 
 /* --------------------------------------------------------------------------
  * Types
@@ -40,31 +41,13 @@ import { tracePromptEngine, traceOptimizer } from './traceLogger.js';
  * Constantes
  * -------------------------------------------------------------------------- */
 
-/** @type {Record<string, number>} */
-const MODEL_CONTEXT_WINDOWS = {
-  'llama3.2:3b': 8192,
-  'llama3.2:1b': 8192,
-  'llama3.1:8b': 128000,
-  'llama3.1:70b': 128000,
-  'llama3.1:405b': 128000,
-  'llama3:8b': 8192,
-  'mistral:7b': 8192,
-  'mistral-nemo:12b': 128000,
-  'mixtral:8x7b': 32768,
-  'mixtral:8x22b': 65536,
-  'qwen2.5:7b': 32768,
-  'qwen2.5:14b': 32768,
-  'qwen2.5:32b': 32768,
-  'qwen2.5:72b': 32768,
-  'deepseek-coder:6.7b': 16384,
-  'deepseek-coder:33b': 16384,
-  'deepseek-r1:7b': 16384,
-  'codestral:22b': 32000,
-  'phi3:14b': 4096,
-  'phi3:mini': 4096,
-  'phi3:medium': 128000,
-  default: 4096,
-};
+// DEPRECATED: l'ancienne table MODEL_CONTEXT_WINDOWS a été supprimée.
+// Le resolver cascade (modelContextResolver.js + data/model-context-windows.json)
+// est la source unique de vérité pour les CWs. Il couvre tous les modèles
+// de cette ancienne table (llama3.2:3b → 128k, mistral:7b → 32k, codestral → 32k,
+// phi3 → 128k pour le medium / 4k pour mini, etc.) + 100+ autres.
+// Si une CW manque : ajouter une entrée dans data/model-context-windows.json
+// (exact pour le modelId, ou pattern en fallback).
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -350,6 +333,122 @@ function formatContextForTemplate(ctx, type) {
 }
 
 /* --------------------------------------------------------------------------
+ * Résolution du provider de préparation
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Résout le provider à utiliser pour les appels de préparation (enhancement
+ * de prompt en entrée). Ce rôle a des besoins MODESTES en fenêtre de
+ * contexte (le prompt composé est petit) — un petit modèle local suffit
+ * souvent et coûte moins cher.
+ *
+ * Logique :
+ *   1. Si `state.assistant.provider.preparationProviderId` est défini ET
+ *      différent du provider courant, on récupère la config du provider
+ *      ciblé depuis `state.assistant.providerConfigs[id]` (model, apiKey,
+ *      baseUrl, maxTokens). Le modèle utilisé est `preparationModel` si
+ *      défini (override explicite) sinon le model de la config du provider.
+ *   2. Sinon, on retourne le provider courant avec `preparationModel` comme
+ *      override de modèle (comportement legacy).
+ *
+ * @param {Object} state - Le state global (getState())
+ * @returns {Object|null} Provider config prêt à être passé à chatCompletion,
+ *   ou null si aucun provider n'est disponible.
+ */
+function resolvePreparationProvider(state) {
+  const provider = state?.assistant?.provider;
+  if (!provider?.id) return null;
+
+  const prepProviderId = provider.preparationProviderId;
+  const configs = state.assistant.providerConfigs || {};
+
+  // Cas 1 : un provider de préparation DIFFÉRENT du provider chat est défini
+  if (typeof prepProviderId === 'string' && prepProviderId.length > 0 && prepProviderId !== provider.id) {
+    const prepConfig = configs[prepProviderId];
+    if (prepConfig && (prepConfig.apiKey || prepConfig.baseUrl)) {
+      return {
+        ...prepConfig,
+        id: prepProviderId,
+        // preparationModel est un override optionnel au sein du provider de prep
+        model: provider.preparationModel || prepConfig.model || provider.model,
+        temperature: 0.3,
+        maxTokens: Math.min(prepConfig.maxTokens || 4096, 2048),
+      };
+    }
+    // Le provider de prep ciblé n'a pas de config valide → fallback sur le provider courant
+  }
+
+  // Cas 2 : pas de provider de prep spécifique, ou provider de prep == provider chat
+  return {
+    ...provider,
+    model: provider.preparationModel || provider.model,
+    temperature: 0.3,
+    maxTokens: Math.min(provider.maxTokens || 4096, 2048),
+  };
+}
+
+/**
+ * Résout le provider à utiliser pour l'OPTIMISATION de réponse (sortie).
+ * Distinct de resolvePreparationProvider() car les deux rôles ont des
+ * besoins opposés en fenêtre de contexte :
+ *   - enhancement (entrée) : prompt petit, petit modèle OK
+ *   - optimization (sortie) : doit pouvoir contenir la réponse complète
+ *     du chat pour la condenser → fenêtre de contexte ≥ celle du chat
+ *
+ * Résolution (par ordre de priorité) :
+ *   1. Si `optimizationProviderId` est défini ET ≠ du chat, on l'utilise
+ *      (config depuis providerConfigs[id], modèle = preparationModel override
+ *      ou config.model, maxTokens plus généreux car on doit accommoder
+ *      toute la réponse).
+ *   2. Sinon (null), on RETOMBE sur resolvePreparationProvider() — qui
+ *      lui-même retombe sur le chat. Comportement rétro-compatible : les
+ *      configs sauvegardées avant l'introduction de optimizationProviderId
+ *      continuent de fonctionner comme avant (1 seul provider = 2 rôles).
+ *
+ * Le filtre strict de compatibilité CW (≥ chat CW) est appliqué en amont
+ * dans l'UI (providerPanel.getEligiblePrepProviders avec mode='optimize')
+ * pour empêcher la sélection d'un provider insuffisant. Si un utilisateur
+ * contourne ce filtre (ex: en éditant manuellement le localStorage),
+ * optimizeResponse() détectera le mismatch et émettra un trace warning
+ * sans crasher.
+ *
+ * @param {Object} state - Le state global (getState())
+ * @returns {Object|null} Provider config prêt à être passé à chatCompletion
+ */
+function resolveOptimizationProvider(state) {
+  const provider = state?.assistant?.provider;
+  if (!provider?.id) return null;
+
+  const optProviderId = provider.optimizationProviderId;
+  const configs = state.assistant.providerConfigs || {};
+
+  // Cas 1 : un provider d'optimisation DIFFÉRENT est explicitement défini
+  if (typeof optProviderId === 'string' && optProviderId.length > 0 && optProviderId !== provider.id) {
+    const optConfig = configs[optProviderId];
+    if (optConfig && (optConfig.apiKey || optConfig.baseUrl)) {
+      return {
+        ...optConfig,
+        id: optProviderId,
+        model: optConfig.model || provider.model,
+        temperature: 0.3,
+        // maxTokens plus généreux que pour l'enhancement : on doit accommoder
+        // toute la réponse + le prompt d'optimisation système. 4096 = valeur
+        // safe par défaut, l'utilisateur peut configurer plus haut dans le preset.
+        maxTokens: Math.min(optConfig.maxTokens || 8192, 8192),
+      };
+    }
+    // Le provider d'optimisation ciblé n'a pas de config valide → fallback
+  }
+
+  // Cas 2 (défaut) : pas de provider d'optimisation spécifique → retombe
+  // sur le provider de préparation (qui lui-même retombe sur le chat).
+  // C'est le chemin rétro-compatible : les configs sans optimizationProviderId
+  // utilisent le même provider pour les 2 rôles, comme avant l'introduction
+  // de cette séparation.
+  return resolvePreparationProvider(state);
+}
+
+/* --------------------------------------------------------------------------
  * PromptEngine
  * -------------------------------------------------------------------------- */
 
@@ -464,6 +563,13 @@ export class PromptEngine {
 
   /**
    * Détecte la fenêtre de contexte du modèle local.
+   *
+   * Stratégie de cascade (de la plus précise à la moins précise) :
+   *   1. API Ollama /api/show (si provider=ollama) — la valeur RÉELLE du modelfile
+   *   2. Resolver cascade (modelContextResolver.js) — table de référence
+   *      avec 150+ modèles exact + patterns + provider defaults
+   *   3. Fallback dur : 4096
+   *
    * @param {Object} provider
    * @param {string} modelId
    * @returns {Promise<number>}
@@ -474,7 +580,7 @@ export class PromptEngine {
       return 4096;
     }
 
-    // 1. Essayer l'API Ollama /api/show
+    // 1. Essayer l'API Ollama /api/show (plus précis que la table — valeur réelle du modelfile)
     if (provider?.id === 'ollama' && provider?.baseUrl) {
       try {
         const apiUrl = provider.baseUrl.replace('/v1', '').replace(/\/$/, '');
@@ -503,21 +609,22 @@ export class PromptEngine {
           }
         }
       } catch {
-        // Fallback silencieux
+        // Fallback silencieux → resolver cascade
       }
     }
 
-    // 2. Table de correspondance connue
-    for (const [pattern, ctx] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
-      if (modelId.toLowerCase().includes(pattern)) {
-        tracePromptEngine('detectContextWindow', { modelId, detected: ctx, source: 'table' });
-        return ctx;
-      }
-    }
-
-    // 3. Valeur par défaut
-    tracePromptEngine('detectContextWindow', { modelId, detected: 4096, source: 'default' });
-    return 4096;
+    // 2. Resolver cascade (exact → pattern → provider default → 4096)
+    const resolved = resolveContextWindow({
+      modelId,
+      providerId: provider?.id,
+      apiValue: null,
+    });
+    tracePromptEngine('detectContextWindow', {
+      modelId,
+      detected: resolved,
+      source: 'resolver-cascade',
+    });
+    return resolved;
   }
 
   /**
@@ -670,21 +777,24 @@ export class PromptEngine {
     let apiEnhanced = false;
     let originalPrompt = null;
 
-    // 3b. Améliorer le prompt via l'API si un modèle de préparation est configuré
-    //     et que le type n'est pas une simple conversation
+    // 3b. Améliorer le prompt via l'API si un provider de préparation est
+    //     configuré (modèle de prep OU provider de prep distinct du chat).
+    //     resolvePreparationProvider() retourne null si pas de provider
+    //     actif, et retombe toujours sur le provider chat sinon.
     if (type !== 'conversation') {
       const state = getState();
       const provider = state.assistant?.provider;
-      const hasPreparationModel = provider?.preparationModel &&
-        typeof provider.preparationModel === 'string' &&
-        provider.preparationModel.length > 0;
+      const hasCustomPrep = !!(provider?.preparationModel ||
+        (provider?.preparationProviderId && provider.preparationProviderId !== provider.id));
 
-      if (hasPreparationModel) {
+      if (hasCustomPrep) {
         originalPrompt = prompt;
+        const prep = resolvePreparationProvider(state);
         tracePromptEngine('enhancePromptViaApi ENTRY', {
           originalLen: prompt.length,
           tokenCount: estimateTokens(prompt),
-          model: provider.preparationModel,
+          model: prep?.model,
+          providerId: prep?.id,
         });
         const enhanced = await this._enhancePromptViaApi(prompt);
         if (enhanced) {
@@ -735,7 +845,7 @@ export class PromptEngine {
       actions.setCurrentPrompt(prepared);
     }
 
-    // 7. Écrire sur le disque (fire-and-forget)
+    // 7. Écrire sur le disque (fire-and-forget) + index.json
     this._writeToFile(prepared).catch(() => {});
 
     tracePromptEngine('preparePrompt COMPLETE', {
@@ -783,13 +893,11 @@ export class PromptEngine {
         { role: 'user', content: composedPrompt },
       ];
 
-      // Utiliser le modèle de préparation s'il est configuré, sinon le modèle du chat
-      const enhancementProvider = {
-        ...provider,
-        model: provider.preparationModel || provider.model,
-        temperature: 0.3, // Température basse pour des révisions plus stables
-        maxTokens: Math.min(provider.maxTokens || 4096, 2048),
-      };
+      // Résoudre le provider de préparation : si preparationProviderId pointe
+      // vers un autre provider que le chat, on récupère sa config depuis
+      // state.assistant.providerConfigs[id]. Sinon, on utilise le provider
+      // courant avec éventuellement le preparationModel override.
+      const enhancementProvider = resolvePreparationProvider(state);
 
       const { chatCompletion } = await import('./aiClient.js');
 
@@ -898,13 +1006,31 @@ export class PromptEngine {
         { role: 'user', content: `Réponse originale :\n\n${response}` },
       ];
 
-      // Utiliser le provider principal ou le modèle de préparation
-      const optimizationProvider = {
-        ...provider,
-        model: provider.preparationModel || provider.model,
-        temperature: 0.3, // Température basse pour des révisions plus stables
-        maxTokens: Math.min(provider.maxTokens || 4096, 2048),
-      };
+      // Résoudre le provider d'optimisation (séparé de _enhancePromptViaApi
+      // qui utilise resolvePreparationProvider). Les deux rôles ont des besoins
+      // opposés : le prep prompt est petit (resolvePreparationProvider suffit),
+      // l'optimisation doit pouvoir contenir toute la réponse (donc on utilise
+      // resolveOptimizationProvider qui retombe sur resolvePreparationProvider
+      // si optimizationProviderId est null = rétro-compatible).
+      const state = getState();
+      const optimizationProvider = resolveOptimizationProvider(state);
+
+      // Defensive check : si le provider résolu a une CW < chat CW, on émet
+      // un trace warning. L'UI empêche normalement cette config via le filtre
+      // strict, mais un utilisateur peut l'avoir contournée (ex: édition
+      // manuelle du localStorage). On log mais on ne bloque pas — laisser
+      // l'appel échouer naturellement avec un message d'erreur est plus
+      // informatif qu'un throw silencieux.
+      const chatCW = state.assistant?.provider?.modelMeta?.contextWindow ?? null;
+      const optCW = optimizationProvider.contextWindow ?? optimizationProvider.modelMeta?.contextWindow ?? null;
+      if (chatCW && optCW && optCW < chatCW) {
+        traceOptimizer('optimizeResponse CW_MISMATCH', {
+          chatContextWindow: chatCW,
+          optimizationContextWindow: optCW,
+          optimizationProviderId: optimizationProvider.id,
+          hint: 'optimizationProvider CW < chat CW — risk of truncation',
+        });
+      }
 
       traceOptimizer('optimizeResponse API_CALL', {
         model: optimizationProvider.model,
@@ -917,10 +1043,11 @@ export class PromptEngine {
       // Importer dynamiquement pour éviter les dépendances circulaires
       const { chatCompletion } = await import('./aiClient.js');
 
-      const result = await chatCompletion(optimizationProvider, messages, {
-        maxRetries: 1,
-        noRotation: true,
-      });
+    const result = await chatCompletion(optimizationProvider, messages, {
+      maxRetries: 1,
+      noRotation: true,
+      timeout: 90000, // 90s : l'optimisation peut prendre du temps sur les longues réponses
+    });
 
       const optimized = result?.content?.trim();
       if (!optimized) {
@@ -940,19 +1067,32 @@ export class PromptEngine {
       });
       return optimized;
     } catch (err) {
-      console.warn('[PromptEngine] Échec optimisation:', err.message);
-      traceOptimizer('optimizeResponse FAILED', {
-        errorMsg: err.message?.slice(0, 200),
-        originalLen: response?.length || 0,
-      });
+      // Un timeout sur l'optimisation n'est pas un échec critique : le LLM a juste
+      // pris trop de temps pour condenser une longue réponse. On log en info (pas warn)
+      // et on retourne null pour que la réponse originale soit conservée telle quelle.
+      const isTimeout = err.name === 'TimeoutError' || /signal timed out|aborted/i.test(err.message || '');
+      if (isTimeout) {
+        console.info('[PromptEngine] Optimisation timeoutée (>90s) — réponse originale conservée:', err.message);
+        traceOptimizer('optimizeResponse TIMEOUT', {
+          errorMsg: err.message?.slice(0, 200),
+          originalLen: response?.length || 0,
+        });
+      } else {
+        console.warn('[PromptEngine] Échec optimisation:', err.message);
+        traceOptimizer('optimizeResponse FAILED', {
+          errorMsg: err.message?.slice(0, 200),
+          originalLen: response?.length || 0,
+        });
+      }
       return null;
     }
   }
 
-  /* ----- Persistance fichier ----- */
+  /* ----- Persistance fichier (data/prompts/) ----- */
 
   /**
-   * Écrit le prompt préparé dans data/prompts/ via l'API.
+   * Écrit le prompt préparé dans data/prompts/ via l'API env-server
+   * et met à jour l'index.json (rotation à 50 fichiers gérée côté serveur).
    * @param {PreparedPrompt} prepared
    */
   async _writeToFile(prepared) {
@@ -963,7 +1103,7 @@ export class PromptEngine {
     });
     try {
       const content = [
-        `# Prompt préparé — ${capitalize(prepared.type)}`,
+        `# Prompt préparé — ${prepared.type}`,
         `> Généré le ${new Date(prepared.timestamp).toLocaleString('fr-FR')}`,
         `> Type : ${prepared.type}`,
         `> Cache : ${prepared.cached ? 'oui (réutilisé)' : 'non (composition locale)'}`,
@@ -995,6 +1135,7 @@ export class PromptEngine {
             type: prepared.type,
             timestamp: prepared.timestamp,
             tokens: estimateTokens(prepared.prompt),
+            category: prepared.type,
           },
         }),
       });
@@ -1018,12 +1159,4 @@ export class PromptEngine {
       });
     }
   }
-}
-
-/* --------------------------------------------------------------------------
- * Helpers internes
- * -------------------------------------------------------------------------- */
-
-function capitalize(str) {
-  return str.charAt(0).toUpperCase() + str.slice(1);
 }

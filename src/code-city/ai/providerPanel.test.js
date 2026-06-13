@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mock des dépendances AVANT les imports
 vi.mock('../state.js', () => ({
   getState: vi.fn(),
-  actions: { updateProvider: vi.fn(), setProvider: vi.fn() },
+  actions: { updateProvider: vi.fn(), setProvider: vi.fn(), setMaxParallel: vi.fn() },
   subscribe: vi.fn(),
 }));
 
@@ -47,8 +47,17 @@ vi.mock('./workflowRunner.js', () => ({
   setOnStepChange: vi.fn(),
 }));
 
+vi.mock('./providerStore.js', () => ({
+  getProviderConfig: vi.fn(),
+  setProviderConfig: vi.fn().mockResolvedValue(true),
+  deleteProviderConfig: vi.fn(),
+  listSavedProviders: vi.fn(),
+  getActiveProvider: vi.fn(),
+  setActiveProvider: vi.fn(),
+}));
+
 // Imports APRES les mocks
-import { getState, subscribe } from '../state.js';
+import { getState, subscribe, actions } from '../state.js';
 import { toast } from './toast.js';
 import {
   startWorkflow, cancelWorkflow, testApiKey, selectModel,
@@ -58,6 +67,7 @@ import {
   getPreset, getPresetsByCategory, getGridSections, getColumnFromName,
 } from './providerLoader.js';
 import { getApiKeyForEnvKey, hasApiKey } from './envLoader.js';
+import { setProviderConfig } from './providerStore.js';
 
 import {
   initializeProviderPanel,
@@ -65,6 +75,7 @@ import {
   closeProviderPanel,
   toggleProviderPanel,
   isProviderPanelOpen,
+  _resetMismatchPromptCache,
 } from './providerPanel.js';
 
 // --- Helpers DOM ---
@@ -1255,6 +1266,1328 @@ describe('providerPanel', () => {
       stepChangeFn(2);
       const body = document.getElementById('app-providers-body');
       expect(body.innerHTML).toContain('pp-api-key');
+    });
+  });
+
+  // =========================================================================
+  // Zone 1 - Slot Mismatch Warning (bouton clickable + flash)
+  // =========================================================================
+
+  describe('Zone 1 - Slot Mismatch Warning (clickable)', () => {
+    beforeEach(async () => {
+      // Reset le dedup set pour que les tests soient order-independent
+      _resetMismatchPromptCache();
+      actions.setMaxParallel.mockReset();
+      await initializeProviderPanel();
+    });
+
+    /**
+     * Mock le state avec LM Studio comme provider actif et un serverConfig
+     * contenant N modèles chargés (= N slots réels côté serveur).
+     */
+    function mockLmStudioWithSlots(maxParallel, actualSlots) {
+      const serverConfig = actualSlots === null
+        ? null
+        : {
+            loadedModels: Array.from({ length: actualSlots }, (_, i) => `model-${i}`),
+            loadedCount: actualSlots,
+            actualSlots,
+            n_parallel: null,
+            fetchedAt: Date.now(),
+          };
+      getState.mockReturnValue({
+        assistant: {
+          provider: {
+            id: 'lmstudio',
+            baseUrl: 'http://localhost:1234/v1',
+            model: 'gpt-4',
+            maxParallel,
+            isConnected: true,
+            lastTestedAt: Date.now(),
+            serverConfig,
+          },
+          providers: { custom: [] },
+          chatHistory: [],
+          maxParallel,
+        },
+      });
+    }
+
+    /**
+     * Mock le state avec Ollama (qui n'a pas de slots) comme provider actif.
+     * runStep3 stocke actualSlots=null et loadedCount=N pour Ollama.
+     */
+    function mockOllamaWithModels(modelCount) {
+      getState.mockReturnValue({
+        assistant: {
+          provider: {
+            id: 'ollama',
+            baseUrl: 'http://localhost:11434/v1',
+            model: 'llama3.2',
+            maxParallel: 1,
+            isConnected: true,
+            lastTestedAt: Date.now(),
+            serverConfig: {
+              loadedModels: Array.from({ length: modelCount }, (_, i) => `model-${i}`),
+              loadedCount: modelCount,
+              actualSlots: null, // Ollama = séquentiel
+              n_parallel: null,
+              fetchedAt: Date.now(),
+            },
+          },
+          providers: { custom: [] },
+          chatHistory: [],
+          maxParallel: 1,
+        },
+      });
+    }
+
+    it('affiche un bouton clickable avec data-action sync-max-parallel en cas de mismatch', () => {
+      mockLmStudioWithSlots(4, 2);
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      const btn = body.querySelector('[data-action="sync-max-parallel"]');
+      expect(btn).toBeTruthy();
+      expect(btn.tagName).toBe('BUTTON');
+      expect(btn.dataset.actualSlots).toBe('2');
+    });
+
+    it('bouton mismatch a la classe pp-status__slots-sync-btn--mismatch et le hint', () => {
+      mockLmStudioWithSlots(4, 2);
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      const btn = body.querySelector('[data-action="sync-max-parallel"]');
+      expect(btn.classList.contains('pp-status__slots-sync-btn--mismatch')).toBe(true);
+      const hint = btn.querySelector('.pp-status__slots-sync-hint');
+      expect(hint).toBeTruthy();
+      expect(hint.textContent).toContain('Sync à 2');
+    });
+
+    it('bouton match a la classe pp-status__slots-sync-btn--match et PAS de hint', () => {
+      mockLmStudioWithSlots(4, 4);
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      const btn = body.querySelector('[data-action="sync-max-parallel"]');
+      expect(btn).toBeTruthy();
+      expect(btn.classList.contains('pp-status__slots-sync-btn--match')).toBe(true);
+      const hint = btn.querySelector('.pp-status__slots-sync-hint');
+      expect(hint).toBeNull();
+    });
+
+    it('PAS de bouton pour Ollama (actualSlots null)', () => {
+      mockOllamaWithModels(3);
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      const btn = body.querySelector('[data-action="sync-max-parallel"]');
+      expect(btn).toBeNull();
+    });
+
+    it('PAS de bouton pour les providers online (catégorie !== local)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: {
+            id: 'openrouter',
+            model: 'gpt-4',
+            isConnected: true,
+            lastTestedAt: Date.now(),
+          },
+          providers: { custom: [] },
+          chatHistory: [],
+          maxParallel: 1,
+        },
+      });
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      const btn = body.querySelector('[data-action="sync-max-parallel"]');
+      expect(btn).toBeNull();
+    });
+
+    it('clic sur le bouton appelle actions.setMaxParallel avec actualSlots', () => {
+      mockLmStudioWithSlots(4, 2);
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      const btn = body.querySelector('[data-action="sync-max-parallel"]');
+      btn.click();
+      expect(actions.setMaxParallel).toHaveBeenCalledWith(2);
+      expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('2'));
+    });
+
+    it('clic sur le bouton déclenche un flash visuel sur le slider (requestAnimationFrame)', async () => {
+      mockLmStudioWithSlots(4, 2);
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      const btn = body.querySelector('[data-action="sync-max-parallel"]');
+      btn.click();
+      // Attendre la prochaine animation frame pour que le callback rAF s'exécute
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const sliderField = body.querySelector('#pp-max-parallel-field');
+      expect(sliderField).toBeTruthy();
+      expect(sliderField.classList.contains('pp-options__field--flash')).toBe(true);
+    });
+
+    it('clic avec data-actual-slots invalide (NaN) n appelle PAS setMaxParallel', () => {
+      mockLmStudioWithSlots(4, 2);
+      setupWorkflowStep(7);
+      openProviderPanel();
+      const body = document.getElementById('app-providers-body');
+      // Inject un bouton corrompu (data-actual-slots = "abc")
+      const badBtn = document.createElement('button');
+      badBtn.dataset.action = 'sync-max-parallel';
+      badBtn.dataset.actualSlots = 'abc';
+      body.appendChild(badBtn);
+      badBtn.click();
+      expect(actions.setMaxParallel).not.toHaveBeenCalled();
+      badBtn.remove();
+    });
+  });
+
+  // =========================================================================
+  // Auto-prompt toast (subscribe handler)
+  // =========================================================================
+
+  describe('Auto-prompt toast (subscribe handler)', () => {
+    let subscriberFn;
+
+    beforeEach(async () => {
+      // Reset le dedup set pour des tests order-independent
+      _resetMismatchPromptCache();
+      actions.setMaxParallel.mockReset();
+      toast.warning.mockReset();
+      toast.success.mockReset();
+      toast.info.mockReset();
+      await initializeProviderPanel();
+      // Capture le subscriber enregistré
+      subscriberFn = subscribe.mock.calls[0][0];
+    });
+
+    function mockStateWithMismatchedSlots(providerId, maxParallel, actualSlots) {
+      getState.mockReturnValue({
+        assistant: {
+          provider: {
+            id: providerId,
+            baseUrl: 'http://localhost:1234/v1',
+            model: 'gpt-4',
+            maxParallel,
+            isConnected: true,
+            lastTestedAt: Date.now(),
+          },
+          providers: { custom: [] },
+          chatHistory: [],
+          maxParallel,
+        },
+      });
+    }
+
+    function makeServerConfigMeta(actualSlots) {
+      return {
+        type: 'assistant:server-config',
+        serverConfig: {
+          loadedModels: Array.from({ length: actualSlots }, (_, i) => `model-${i}`),
+          loadedCount: actualSlots,
+          actualSlots,
+          n_parallel: null,
+          fetchedAt: Date.now(),
+        },
+      };
+    }
+
+    it('affiche un toast warning quand serverConfig a un mismatch ET le panneau est ouvert', () => {
+      openProviderPanel();
+      mockStateWithMismatchedSlots('lmstudio', 4, 2);
+      subscriberFn(getState(), makeServerConfigMeta(2));
+      expect(toast.warning).toHaveBeenCalledTimes(1);
+      expect(toast.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Mismatch'),
+        expect.objectContaining({ duration: 5000 }),
+      );
+    });
+
+    it('PAS de toast quand le panneau est ferme (gating isOpen)', () => {
+      expect(isProviderPanelOpen()).toBe(false);
+      mockStateWithMismatchedSlots('lmstudio', 4, 2);
+      subscriberFn(getState(), makeServerConfigMeta(2));
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+
+    it('PAS de toast quand actualSlots === maxParallel (match)', () => {
+      openProviderPanel();
+      mockStateWithMismatchedSlots('lmstudio', 4, 4);
+      subscriberFn(getState(), makeServerConfigMeta(4));
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+
+    it('PAS de toast quand actualSlots est null (Ollama, pas de slots)', () => {
+      openProviderPanel();
+      mockStateWithMismatchedSlots('ollama', 1, null);
+      subscriberFn(getState(), { type: 'assistant:server-config', serverConfig: null });
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+
+    it('DEDUP: 2 events consecutifs avec meme (provider, actualSlots) → 1 seul toast', () => {
+      openProviderPanel();
+      mockStateWithMismatchedSlots('lmstudio', 4, 2);
+      subscriberFn(getState(), makeServerConfigMeta(2));
+      subscriberFn(getState(), makeServerConfigMeta(2));
+      expect(toast.warning).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-toste apres changement de provider (meme actualSlots, autre provider)', () => {
+      openProviderPanel();
+      mockStateWithMismatchedSlots('lmstudio', 4, 2);
+      subscriberFn(getState(), makeServerConfigMeta(2));
+      expect(toast.warning).toHaveBeenCalledTimes(1);
+      // Changement de provider → dedup reset
+      mockStateWithMismatchedSlots('ollama', 4, 2);
+      subscriberFn(getState(), { type: 'assistant:provider' });
+      // Re-mismatch pour le nouveau provider
+      subscriberFn(getState(), makeServerConfigMeta(2));
+      expect(toast.warning).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-toste si actualSlots change (ex: autre modèle chargé)', () => {
+      openProviderPanel();
+      mockStateWithMismatchedSlots('lmstudio', 4, 2);
+      subscriberFn(getState(), makeServerConfigMeta(2));
+      expect(toast.warning).toHaveBeenCalledTimes(1);
+      // Nouveau serverConfig avec 3 modèles chargés (autre dedup key)
+      subscriberFn(getState(), makeServerConfigMeta(3));
+      expect(toast.warning).toHaveBeenCalledTimes(2);
+    });
+
+    it('ne réagit PAS aux events non-server-config (assistant:provider seul, mismatch state)', () => {
+      openProviderPanel();
+      mockStateWithMismatchedSlots('lmstudio', 4, 2);
+      // Event provider sans server-config → ne doit pas produire de toast
+      subscriberFn(getState(), { type: 'assistant:provider' });
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // Zone 4 — PromptEngine & Optimiseur de réponse
+  // =========================================================================
+  // Verrouille l'invariant "always interactive" demandé par l'utilisateur :
+  // Zone 3 (chat) et Zone 4 (prep/optimizer) sont INDEPENDANTES. Le dropdown
+  // et le slider de Zone 4 doivent toujours rendre, quel que soit l'état
+  // du workflow Zone 3 ou le nombre de providers configurés.
+  // Si un futur refactor ré-introduit du gating (info/warning gating), ces
+  // tests cassent et préviennent la régression.
+
+  describe('Zone 4 - PrepOptimizer (always interactive)', () => {
+    let originalSetPreparationProvider;
+
+    beforeEach(async () => {
+      // Préserver l'existant si jamais un test l'a posé, et partir d'un mock neuf
+      originalSetPreparationProvider = actions.setPreparationProvider;
+      actions.setPreparationProvider = vi.fn();
+      // setOptimizationProvider is added to actions here (per-test mock) because
+      // the initial vi.mock('../state.js') at the top of the file only declares
+      // updateProvider, setProvider, setMaxParallel, setPreparationProvider.
+      // Mirrors the setPreparationProvider pattern above.
+      actions.setOptimizationProvider = vi.fn();
+      await initializeProviderPanel();
+    });
+
+    afterEach(() => {
+      // Restore pour ne pas polluer les autres describe blocks
+      actions.setPreparationProvider = originalSetPreparationProvider;
+      actions.setOptimizationProvider = vi.fn();
+    });
+
+    it('rend la zone 4 .pp-prep-optimizer dans tous les cas (0, 1, 2+ providers)', () => {
+      // Cas 1 : aucun autre provider configuré
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      expect(document.querySelector('.pp-prep-optimizer')).toBeTruthy();
+
+      // Cas 2 : 1 autre provider configuré
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: { openrouter: { model: 'gpt-4' } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      // Re-render en émettant un event
+      subscribe.mock.calls[0][0](getState(), { type: 'assistant:provider' });
+      expect(document.querySelector('.pp-prep-optimizer')).toBeTruthy();
+
+      // Cas 3 : 2+ providers configurés
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {
+            openrouter: { model: 'gpt-4' },
+            gemini: { model: 'gemini-2.5-flash' },
+          },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      subscribe.mock.calls[0][0](getState(), { type: 'assistant:provider' });
+      expect(document.querySelector('.pp-prep-optimizer')).toBeTruthy();
+    });
+
+    it('le dropdown #pp-prep-provider est TOUJOURS présent (invariant always interactive)', () => {
+      // 0 autre provider
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      expect(select).toBeTruthy();
+      expect(select.tagName).toBe('SELECT');
+    });
+
+    it('l option par défaut "Même provider que le chat" est toujours en première position', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, model: 'llama3.2' },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const firstOption = select.querySelector('option');
+      expect(firstOption).toBeTruthy();
+      expect(firstOption.value).toBe('');
+      expect(firstOption.textContent).toContain('Même provider que le chat');
+    });
+
+    it('l option "Même provider que le chat" est selected par défaut quand preparationProviderId est null', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, model: 'llama3.2' },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const defaultOption = select.querySelector('option[value=""]');
+      expect(defaultOption.selected).toBe(true);
+    });
+
+    it('le slider #pp-opt-threshold est TOUJOURS présent et éditable (indépendant des stats)', () => {
+      // Cas 1 : aucune stat d'optimisation
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const slider = document.getElementById('pp-opt-threshold');
+      expect(slider).toBeTruthy();
+      expect(slider.type).toBe('range');
+      expect(slider.disabled).toBe(false);
+
+      // Cas 2 : avec stats
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 1000,
+          optimizationStats: { totalOptimized: 5, totalTokensSaved: 1234, averageCompression: 42 },
+        },
+      });
+      subscribe.mock.calls[0][0](getState(), { type: 'assistant:provider' });
+      const slider2 = document.getElementById('pp-opt-threshold');
+      expect(slider2).toBeTruthy();
+      expect(slider2.type).toBe('range');
+      expect(slider2.value).toBe('1000');
+    });
+
+    it('n affiche PAS le hint muted quand des stats existent', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 5, totalTokensSaved: 1234, averageCompression: 42 },
+        },
+      });
+      openProviderPanel();
+      expect(document.querySelector('.pp-options__hint--muted')).toBeNull();
+      // Et les stats sont affichées
+      expect(document.querySelector('.pp-opt-stats')).toBeTruthy();
+    });
+
+    it('affiche le hint muted UNIQUEMENT quand totalOptimized === 0 (pas encore de stats)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const muted = document.querySelector('.pp-options__hint--muted');
+      expect(muted).toBeTruthy();
+      expect(muted.textContent).toContain('Aucune optimisation');
+    });
+
+    it('n utilise PAS la classe CSS morte .pp-options__hint--info (info hint)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      // Aucun info hint (la classe a été retirée du CSS)
+      const infoHints = document.querySelectorAll('.pp-options__hint--info');
+      expect(infoHints.length).toBe(0);
+    });
+
+    it('affiche les providers éligibles dans le dropdown quand il y en a (≠ du chat courant)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', model: 'llama3.2' },
+          providers: { custom: [] },
+          providerConfigs: {
+            // ollama exclu (= current), openrouter + gemini éligibles
+            openrouter: { model: 'gpt-4' },
+            gemini: { model: 'gemini-2.5-flash' },
+          },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 1 option "Même provider" + 2 providers éligibles (triés alphabétiquement par catégorie)
+      expect(options.length).toBe(3);
+      // Gemini < OpenRouter alphabétiquement (les deux sont 'online' → tie → sort by name)
+      expect(options[1].value).toBe('gemini');
+      expect(options[2].value).toBe('openrouter');
+    });
+
+    it('affiche uniquement "Même provider que le chat" si 0 autre provider configuré', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 1 seule option (le défaut)
+      expect(options.length).toBe(1);
+      expect(options[0].value).toBe('');
+    });
+
+    it('changement du select appelle actions.setPreparationProvider avec la valeur', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama' },
+          providers: { custom: [] },
+          providerConfigs: { openrouter: { model: 'gpt-4' } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      select.value = 'openrouter';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(actions.setPreparationProvider).toHaveBeenCalledWith('openrouter');
+    });
+
+    // --- Header & Intro removal ---
+
+    it('n affiche PAS le header de la zone (titre retiré pour gain de place)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      expect(document.querySelector('.pp-prep-optimizer__header')).toBeNull();
+      expect(document.querySelector('.pp-prep-optimizer__title')).toBeNull();
+    });
+
+    it('n affiche PAS l intro de la zone (description retirée pour gain de place)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      expect(document.querySelector('.pp-prep-optimizer__intro')).toBeNull();
+    });
+
+    // --- Save button (save-prep-config) ---
+
+    it('affiche un bouton "Enregistrer" en bas de la zone 4', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const btn = document.querySelector('.pp-prep-optimizer__save-btn');
+      expect(btn).toBeTruthy();
+      expect(btn.tagName).toBe('BUTTON');
+      expect(btn.dataset.action).toBe('save-prep-config');
+      expect(btn.textContent).toContain('Enregistrer');
+    });
+
+    it('clic sur le bouton Enregistrer appelle setProviderConfig avec la config prep', async () => {
+      setProviderConfig.mockClear();
+      setProviderConfig.mockResolvedValue(true);
+
+      getState.mockReturnValue({
+        assistant: {
+          provider: {
+            ...DEFAULT_PROVIDER,
+            id: 'ollama',
+            model: 'llama3.2',
+            modelMeta: { contextWindow: 8192, format: 'openai', latency: 100 },
+          },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: 'openrouter',
+          optimizationThreshold: 800,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const btn = document.querySelector('.pp-prep-optimizer__save-btn');
+      btn.click();
+
+      // Attendre la résolution de la promesse de setProviderConfig
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Vérifier que setProviderConfig a été appelé avec le bon id et la bonne config
+      expect(setProviderConfig).toHaveBeenCalledTimes(1);
+      const [callId, callConfig] = setProviderConfig.mock.calls[0];
+      expect(callId).toBe('ollama');
+      // La config doit contenir les champs prep
+      expect(callConfig.preparationProviderId).toBe('openrouter');
+      expect(callConfig.optimizationThreshold).toBe(800);
+      // optimizationProviderId doit aussi être persisté (séparé de prep depuis
+      // la séparation des rôles). Ce test ne le seed pas → on attend null
+      // (= fallback sur preparationProviderId, rétro-compatible).
+      expect(callConfig.optimizationProviderId).toBeNull();
+      // contextWindow doit être extrait de modelMeta et persisté (pour le
+      // filtre de compatibilité CW qui survit aux reloads)
+      expect(callConfig.contextWindow).toBe(8192);
+      // format doit aussi être persisté (pour le filtre de compatibilité
+      // format qui survit aux reloads)
+      expect(callConfig.format).toBe('openai');
+      // Pas de champs éphémères
+      expect(callConfig.modelMeta).toBeUndefined();
+      expect(callConfig.apiKey).toBeUndefined();
+      expect(callConfig.envKey).toBeUndefined();
+      expect(callConfig.serverConfig).toBeUndefined();
+      // Toast de succès
+      expect(toast.success).toHaveBeenCalledWith('Configuration prep/optimizer enregistrée');
+    });
+
+    it('clic sur Enregistrer sans provider actif ne fait rien (silencieux)', () => {
+      setProviderConfig.mockClear();
+      getState.mockReturnValue({
+        assistant: {
+          provider: { id: '', model: '' },
+          providers: { custom: [] },
+          providerConfigs: {},
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const btn = document.querySelector('.pp-prep-optimizer__save-btn');
+      // Ne doit pas throw
+      expect(() => btn.click()).not.toThrow();
+      // Et ne doit pas appeler setProviderConfig
+      expect(setProviderConfig).not.toHaveBeenCalled();
+    });
+
+    // --- Compatibilité context window (filtre strict) ---
+
+    it('petit chat + grand prep : le prep est éligible (4k < 128k OK)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', modelMeta: { contextWindow: 4096, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { openrouter: { model: 'gpt-4', contextWindow: 128000 } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 1 option "Même provider" + 1 prep (openrouter 128k > chat 4k)
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('openrouter');
+    });
+
+    it('grand chat + grand prep : le prep est éligible (128k >= 128k)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { gemini: { model: 'gemini-2.5-flash', contextWindow: 200000 } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 1 option "Même provider" + 1 prep (gemini 200k >= chat 128k)
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('gemini');
+    });
+
+    it('grand chat + petit opt : l\'optimizer est EXCLU (4k < 128k)', () => {
+      // Le filtre CW strict s'applique UNIQUEMENT à l'optimizer (pas au prep
+      // qui n'a pas besoin de grande CW). On teste donc le dropdown optimizer.
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { ollama: { model: 'llama3.2', contextWindow: 4096 } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-opt-provider');
+      const options = select.querySelectorAll('option');
+      // 1 seule option (le défaut) — ollama 4k est exclu car < 128k (filtre CW strict)
+      expect(options.length).toBe(1);
+      expect(options[0].value).toBe('');
+    });
+
+    it('chat CW inconnue (model pas testé) : permissif, tous les prep sont éligibles', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter' }, // pas de modelMeta
+          providers: { custom: [] },
+          providerConfigs: { ollama: { model: 'llama3.2', contextWindow: 4096 } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 2 options — permissif car chat.modelMeta absent
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('ollama');
+    });
+
+    it('prep CW inconnue : permissif, le prep reste éligible', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { gemini: { model: 'gemini-2.5-flash' } }, // pas de contextWindow
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 2 options — permissif car prep.contextWindow absent
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('gemini');
+    });
+
+    it('filtre mixte optimizer : seulement les opt avec CW >= chat CW sont éligibles', () => {
+      // Le filtre CW strict s'applique UNIQUEMENT à l'optimizer (pas au prep).
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: {
+            ollama: { model: 'llama3.2', contextWindow: 4096 },        // exclu
+            gemini: { model: 'gemini-2.5-flash', contextWindow: 200000, format: 'gemini' }, // exclu (format non supporté)
+            lmstudio: { model: 'mistral-7b', contextWindow: 8192, format: 'openai' },    // exclu
+            claude: { model: 'claude-3.5-sonnet', contextWindow: 500000, format: 'anthropic' }, // éligible
+          },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-opt-provider');
+      const options = select.querySelectorAll('option');
+      // 1 "Utilise le provider de prep" + 1 éligible (claude — gemini exclu par format, ollama/lmstudio par CW)
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('claude');
+    });
+
+    // --- Auto-reset : prep devient incompatible après changement de chat ---
+
+    it('changement de chat : si l\'optimizer actuel devient incompatible (CW), auto-reset + warning toast', () => {
+      // Setup : chat = openrouter (128k), optimizer = ollama (4k) — CW insuffisante pour l'optimizer
+      // Note : le prep n'est PAS affecté (le prep peut être petit, c'est l'optimizer qui doit être gros)
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { ollama: { model: 'llama3.2', contextWindow: 4096 } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationProviderId: 'ollama',
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      // Capture le subscriber
+      const subscriberFn = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+      toast.warning.mockClear();
+      actions.setOptimizationProvider.mockClear();
+
+      // Déclenche l'event assistant:provider (changement de chat)
+      subscriberFn(getState(), { type: 'assistant:provider', provider: getState().assistant.provider });
+
+      // Vérifier l'auto-reset de l'optimizer (et PAS du prep)
+      expect(actions.setOptimizationProvider).toHaveBeenCalledWith(null);
+      expect(actions.setPreparationProvider).not.toHaveBeenCalled();
+      // Vérifier le warning toast mentionne ollama (preset lowercase)
+      expect(toast.warning).toHaveBeenCalledWith(
+        expect.stringContaining('ollama'),
+        expect.objectContaining({ duration: 7000 }),
+      );
+      expect(toast.warning.mock.calls[0][0]).toContain('incompatible');
+    });
+
+    it('changement de chat : si le prep actuel reste compatible, PAS d auto-reset', () => {
+      // Setup : chat = ollama (4k), prep = openrouter (128k) — compatible
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', modelMeta: { contextWindow: 4096, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { openrouter: { model: 'gpt-4', contextWindow: 128000 } },
+          chatHistory: [],
+          preparationProviderId: 'openrouter',
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      const subscriberFn = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+      toast.warning.mockClear();
+      actions.setPreparationProvider.mockClear();
+
+      subscriberFn(getState(), { type: 'assistant:provider', provider: getState().assistant.provider });
+
+      // PAS d'auto-reset (4k chat <= 128k prep = compatible)
+      expect(actions.setPreparationProvider).not.toHaveBeenCalled();
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+
+    it('changement de chat : si CW inconnue (model pas testé), PAS d auto-reset', () => {
+      // Setup : chat sans modelMeta, prep avec CW connu — on ne peut pas comparer
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter' }, // pas de modelMeta
+          providers: { custom: [] },
+          providerConfigs: { ollama: { model: 'llama3.2', contextWindow: 4096 } },
+          chatHistory: [],
+          preparationProviderId: 'ollama',
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      const subscriberFn = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+      toast.warning.mockClear();
+      actions.setPreparationProvider.mockClear();
+
+      subscriberFn(getState(), { type: 'assistant:provider', provider: getState().assistant.provider });
+
+      // PAS d'auto-reset (chat CW inconnue)
+      expect(actions.setPreparationProvider).not.toHaveBeenCalled();
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+
+    it('changement de chat : si prep est null (Même provider), PAS d auto-reset', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { ollama: { model: 'llama3.2', contextWindow: 4096 } },
+          chatHistory: [],
+          preparationProviderId: null, // "Même provider que le chat"
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      const subscriberFn = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+      toast.warning.mockClear();
+      actions.setPreparationProvider.mockClear();
+
+      subscriberFn(getState(), { type: 'assistant:provider', provider: getState().assistant.provider });
+
+      // PAS d'auto-reset (pas de prep spécifique)
+      expect(actions.setPreparationProvider).not.toHaveBeenCalled();
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+
+    // --- Filtre format (Gemini exclu, OpenAI/Anthropic OK) ---
+
+    it('prep format "gemini" : EXCLU (non supporté par l optimiseur)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', modelMeta: { contextWindow: 4096, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { gemini: { model: 'gemini-2.5-flash', contextWindow: 200000, format: 'gemini' } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 1 seule option (le défaut) — gemini est exclu (format non supporté)
+      expect(options.length).toBe(1);
+      expect(options[0].value).toBe('');
+    });
+
+    it('prep format "openai" : éligible (supporté)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', modelMeta: { contextWindow: 4096, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { openrouter: { model: 'gpt-4', contextWindow: 128000, format: 'openai' } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 2 options — openrouter est éligible (format openai)
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('openrouter');
+    });
+
+    it('prep format "anthropic" : éligible (supporté)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { anthropic: { model: 'claude-3.5-sonnet', contextWindow: 200000, format: 'anthropic' } },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 2 options — anthropic est éligible (format anthropic)
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('anthropic');
+    });
+
+    it('prep format inconnu : permissif, le prep reste éligible', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', modelMeta: { contextWindow: 4096, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { gemini: { model: 'gemini-2.5-flash', contextWindow: 200000 } }, // pas de format
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-prep-provider');
+      const options = select.querySelectorAll('option');
+      // 2 options — permissif car format inconnu
+      expect(options.length).toBe(2);
+      expect(options[1].value).toBe('gemini');
+    });
+
+    it('filtre mixte optimizer : exclu si format OR CW incompatible', () => {
+      // Le filtre optimizer combine les deux règles (CW + format). Le filtre
+      // prep (enhancement) n'applique que le format, pas la CW.
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: {
+            ollama: { model: 'llama3.2', contextWindow: 4096, format: 'openai' },       // exclu (CW 4k < 128k)
+            gemini: { model: 'gemini-2.5-flash', contextWindow: 200000, format: 'gemini' }, // exclu (format non supporté)
+            claude: { model: 'claude-3.5-sonnet', contextWindow: 200000, format: 'anthropic' }, // éligible
+            mistral: { model: 'mistral-large', contextWindow: 128000, format: 'openai' },  // éligible (CW 128k >= 128k)
+          },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const select = document.getElementById('pp-opt-provider');
+      const options = select.querySelectorAll('option');
+      // 1 "Utilise le provider de prep" + 2 éligibles (claude anthropic, mistral openai — triés alphabétiquement)
+      expect(options.length).toBe(3);
+      expect(options[1].value).toBe('claude');
+      expect(options[2].value).toBe('mistral');
+    });
+
+    // --- Auto-reset sur incompatibilité FORMAT ---
+
+    it('changement de chat : prep avec format non supporté déclenche auto-reset + warning "format"', () => {
+      // chat = ollama (4k, openai), prep = gemini (200k, gemini)
+      // Le prep a une bonne CW (200k > 4k) mais un mauvais format
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', modelMeta: { contextWindow: 4096, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { gemini: { model: 'gemini-2.5-flash', contextWindow: 200000, format: 'gemini' } },
+          chatHistory: [],
+          preparationProviderId: 'gemini',
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      const subscriberFn = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+      toast.warning.mockClear();
+      actions.setPreparationProvider.mockClear();
+
+      subscriberFn(getState(), { type: 'assistant:provider', provider: getState().assistant.provider });
+
+      // Auto-reset déclenché (raison: format)
+      expect(actions.setPreparationProvider).toHaveBeenCalledWith(null);
+      expect(toast.warning).toHaveBeenCalledWith(
+        expect.stringContaining('gemini'), // format lowercase dans le mock
+        expect.objectContaining({ duration: 7000 }),
+      );
+      // Le message mentionne le format comme raison (nouveau wording)
+      expect(toast.warning.mock.calls[0][0]).toContain('gemini');
+      expect(toast.warning.mock.calls[0][0]).toContain('supporté');
+    });
+
+    it('changement de chat : prep avec format supporté ne déclenche PAS d auto-reset', () => {
+      // chat = ollama (4k, openai), prep = openrouter (128k, openai) — tout compatible
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'ollama', modelMeta: { contextWindow: 4096, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { openrouter: { model: 'gpt-4', contextWindow: 128000, format: 'openai' } },
+          chatHistory: [],
+          preparationProviderId: 'openrouter',
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      const subscriberFn = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+      toast.warning.mockClear();
+      actions.setPreparationProvider.mockClear();
+
+      subscriberFn(getState(), { type: 'assistant:provider', provider: getState().assistant.provider });
+
+      // PAS d'auto-reset
+      expect(actions.setPreparationProvider).not.toHaveBeenCalled();
+      expect(toast.warning).not.toHaveBeenCalled();
+    });
+
+    it('changement de chat : dedup par (chatId, prepId, reason) — CW puis format = 2 toasts distincts', () => {
+      // Setup : chat = openrouter (128k), prep = anthropic (200k, anthropic) — tout compatible
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'openrouter', modelMeta: { contextWindow: 128000, format: 'openai', latency: 100 } },
+          providers: { custom: [] },
+          providerConfigs: { anthropic: { model: 'claude-3.5-sonnet', contextWindow: 200000, format: 'anthropic' } },
+          chatHistory: [],
+          preparationProviderId: 'anthropic',
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+      const subscriberFn = subscribe.mock.calls[subscribe.mock.calls.length - 1][0];
+      toast.warning.mockClear();
+      actions.setPreparationProvider.mockClear();
+
+      // Premier event : assistant:provider, tout est compatible → pas de toast
+      subscriberFn(getState(), { type: 'assistant:provider', provider: getState().assistant.provider });
+      expect(toast.warning).not.toHaveBeenCalled();
+
+      // Le prep est maintenant null (après auto-reset) → plus de toast possible
+      // (le test s'arrête ici car le prep a été reset)
+    });
+
+    // --- REGRESSION : chat sans modelMeta → resolver cascade pour chat CW ---
+
+    /**
+     * Bug rapporté par l'utilisateur (verbatim) : "si je sélectionne google
+     * gemini, on me propose les provider 'petit', ex : lm-studio modele:
+     * gemma-4 avec une fenetre de context de 4096".
+     *
+     * Cause racine : avant le fix, `getEligiblePrepProviders(mode='optimize')`
+     * avait `chatContextWindow = current.modelMeta?.contextWindow ?? null` —
+     * silencieux et permissif quand `modelMeta` était null. Le filtre strict
+     * ne s'activait pas, et tous les providers passaient.
+     *
+     * Fix : `chatContextWindow` retombe sur `resolveContextWindow()` (cascade
+     * resolver : exact → pattern → provider default → 4096). Pour Gemini sans
+     * modelMeta, le resolver retourne 1,000,000 (provider default gemini).
+     * LM Studio gemma-4 → 8k via pattern "gemma" (ou 4k via provider default).
+     * Dans tous les cas, opt CW (8k ou 4k) < chat CW (1M) → opt EXCLU.
+     *
+     * Ce test verrouille le contrat : si un futur refactor retire le fallback
+     * resolver sur chat CW, ce test échoue (lmstudio revient dans la liste).
+     */
+    it('REGRESSION : chat Gemini sans modelMeta → opt LM Studio EXCLU via resolver fallback (cascade strict)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          // Chat = Gemini, AUCUN modelMeta (model jamais testé)
+          provider: { ...DEFAULT_PROVIDER, id: 'gemini', model: 'gemini-2.5-flash' },
+          providers: { custom: [] },
+          // Candidat = LM Studio avec gemma-4, PAS de contextWindow sauvegardé non plus
+          // → les deux CWs viennent du resolver cascade
+          providerConfigs: {
+            lmstudio: { model: 'gemma-4', format: 'openai' },
+          },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      // OPTIMIZER dropdown (mode='optimize' = filtre CW strict)
+      const optSelect = document.getElementById('pp-opt-provider');
+      const optOptions = optSelect.querySelectorAll('option');
+      // 1 seule option (le défaut) — lmstudio est exclu car opt CW (~8k) < chat CW (1M)
+      // Sans le fix, ce test retournerait 2 options (lmstudio passerait).
+      expect(optOptions.length).toBe(1);
+      expect(optOptions[0].value).toBe('');
+
+      // PREP dropdown (mode='enhance' = PAS de filtre CW)
+      // → lmstudio DOIT rester éligible (le prep n'a pas besoin de grande CW)
+      // C'est la raison pour laquelle l'optimizer a un filtre strict et le prep non.
+      const prepSelect = document.getElementById('pp-prep-provider');
+      const prepOptions = prepSelect.querySelectorAll('option');
+      expect(prepOptions.length).toBe(2); // "Même provider" + lmstudio
+      expect(prepOptions[1].value).toBe('lmstudio');
+    });
+
+    /**
+     * Verrou complémentaire : avec le fallback resolver, le dropdown optimizer
+     * est STRICT dès le premier rendu, sans dépendre d'un test modèle préalable.
+     * Si Gemini est le chat (1M via provider default), AUCUN provider avec CW
+     * connue < 1M ne doit apparaître.
+     */
+    it('REGRESSION : chat Gemini sans modelMeta → opt strict (aucun provider avec CW < 1M n apparaît)', () => {
+      getState.mockReturnValue({
+        assistant: {
+          provider: { ...DEFAULT_PROVIDER, id: 'gemini', model: 'gemini-2.5-flash' },
+          providers: { custom: [] },
+          // Multiples candidats : tous avec des CWs < 1M
+          providerConfigs: {
+            lmstudio: { model: 'gemma-4', format: 'openai' },       // ~8k via pattern
+            ollama: { model: 'llama3.2', format: 'openai' },        // 128k via pattern
+            openrouter: { model: 'gpt-4', format: 'openai' },       // 128k via pattern
+            anthropic: { model: 'claude-3.5-sonnet', format: 'anthropic' }, // 200k via exact
+          },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      const optSelect = document.getElementById('pp-opt-provider');
+      const optOptions = optSelect.querySelectorAll('option');
+      // 1 seule option (le défaut) — tous les candidats exclus (max 200k < 1M Gemini)
+      expect(optOptions.length).toBe(1);
+      expect(optOptions[0].value).toBe('');
+    });
+
+    /**
+     * Verrou COMPLÉMENTAIRE au précédent : s'assure que le chemin EXPLICIT
+     * (`current.modelMeta?.contextWindow`) est bien utilisé QUAND il est
+     * défini, et PAS le resolver fallback. Sans cette garde, un futur refactor
+     * pourrait accidentellement court-circuiter le chemin explicite et
+     * toujours passer via le resolver — ce qui masquerait silencieusement des
+     * bugs où `modelMeta` est incorrect (mais où le resolver le "corrigerait"
+     * via son provider default).
+     *
+     * Scénario : chat OpenRouter avec `modelMeta={contextWindow: 50000}` (50k
+     * explicite, INHABITUEL pour OpenRouter qui est plutôt 128k). Le resolver
+     * cascade retournerait 128k (provider default openrouter). Le candidat
+     * lmstudio gemma-4 a un `contextWindow` explicite de 60000 (60k, lui aussi
+     * inhabituel — le resolver retournerait 8k via pattern "gemma").
+     *   - Chemin EXPLICIT : 60k >= 50k → lmstudio INCLUS
+     *   - Chemin RESOLVER  : 8k (gemma) < 128k (openrouter) → lmstudio EXCLU
+     * Si le resolver est utilisé par erreur (au lieu du modelMeta explicite),
+     * lmstudio serait exclu et ce test échouerait → régression détectée.
+     */
+    it('REGRESSION NEGATIVE : chat avec modelMeta explicite → resolver fallback NON utilisé (chemin explicite prioritaire)', () => {
+      // ⚠️ Valeurs irréalistes (50k pour OpenRouter, 60k pour gemma-4) choisies
+      // pour DIFFÉRER du resolver cascade. NE PAS les "corriger" en valeurs réalistes
+      // (sinon les deux chemins — explicite vs resolver — produiraient le même
+      // résultat et ce test ne pourrait plus distinguer lequel est utilisé).
+      getState.mockReturnValue({
+        assistant: {
+          // Chat = openrouter, modelMeta explicite à 50k (volontairement bas
+          // pour DIFFÉRER du resolver default de 128k)
+          provider: {
+            ...DEFAULT_PROVIDER,
+            id: 'openrouter',
+            modelMeta: { contextWindow: 50000, format: 'openai', latency: 100 },
+          },
+          providers: { custom: [] },
+          // Candidat = lmstudio, contextWindow explicite à 60k (volontairement
+          // haut pour DIFFÉRER du resolver pattern gemma qui retournerait 8k)
+          providerConfigs: {
+            lmstudio: { model: 'gemma-4', contextWindow: 60000, format: 'openai' },
+          },
+          chatHistory: [],
+          preparationProviderId: null,
+          optimizationProviderId: null,
+          optimizationThreshold: 500,
+          optimizationStats: { totalOptimized: 0, totalTokensSaved: 0, averageCompression: 0 },
+        },
+      });
+      openProviderPanel();
+
+      const optSelect = document.getElementById('pp-opt-provider');
+      const optOptions = optSelect.querySelectorAll('option');
+      // lmstudio est INCLUS (60k explicite >= 50k explicite) → 2 options
+      // Si le resolver prenait le dessus, lmstudio serait exclu (8k < 128k) → 1 option
+      expect(optOptions.length).toBe(2);
+      expect(optOptions[1].value).toBe('lmstudio');
     });
   });
 });

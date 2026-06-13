@@ -1,5 +1,5 @@
 /* =====================================================================
-   Provider Panel — Layout 3 zones (pp- prefix)
+   Provider Panel — Layout 4 zones (pp- prefix)
    ===================================================================== */
 
 /* Zone 1 — Status (sticky) */
@@ -49,6 +49,73 @@
 .pp-status__value--key {
   color: var(--success);
   font-weight: 600;
+}
+.pp-status__value--match {
+  color: var(--success);
+  font-weight: 600;
+}
+.pp-status__value--mismatch {
+  color: var(--warning, #d97706);
+  font-weight: 600;
+}
+.pp-status__value--unknown {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.pp-status__slots-actual {
+  margin-left: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.pp-status__slots-sync-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+.pp-status__slots-sync-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.pp-status__slots-sync-btn--match {
+  color: var(--success);
+  border-color: var(--success);
+}
+.pp-status__slots-sync-btn--mismatch {
+  color: var(--warning, #d97706);
+  border-color: var(--warning, #d97706);
+  animation: pp-slot-pulse 2.4s ease-in-out infinite;
+}
+.pp-status__slots-sync-btn--mismatch:hover {
+  background: var(--bg-hover);
+  border-color: var(--warning, #d97706);
+  color: var(--warning, #d97706);
+}
+.pp-status__slots-sync-hint {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border-left: 1px solid var(--border-soft);
+  padding-left: 4px;
+  margin-left: 2px;
+}
+@keyframes pp-slot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.18); }
 }
 .pp-status__indicator {
   width: 8px;
@@ -520,6 +587,33 @@
   flex-direction: column;
   gap: 4px;
 }
+.pp-options__field--prominent {
+  background: var(--bg-elev);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-top: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.pp-options__field--prominent .pp-options__label {
+  color: var(--accent);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pp-options__field--prominent .pp-options__hint {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+.pp-options__field--flash {
+  animation: pp-options-flash 1.2s ease-out;
+}
+@keyframes pp-options-flash {
+  0%   { background: transparent; box-shadow: 0 0 0 0 transparent; }
+  20%  { background: var(--accent-soft, rgba(59, 130, 246, 0.12)); box-shadow: 0 0 0 3px var(--accent-soft, rgba(59, 130, 246, 0.18)); }
+  100% { background: transparent; box-shadow: 0 0 0 0 transparent; }
+}
 
 .pp-options__label {
   font-size: 11px;
@@ -532,6 +626,95 @@
   color: var(--text-faint);
   margin: 0;
   line-height: 1.4;
+}
+.pp-options__hint--warning {
+  color: var(--warning, #d97706);
+  font-size: 10.5px;
+  background: rgba(217, 119, 6, 0.08);
+  border-left: 2px solid var(--warning, #d97706);
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pp-options__hint--top {
+  margin-top: 8px;
+}
+.pp-options__hint--success {
+  color: var(--success);
+  font-size: 10.5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pp-options__hint--muted {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* =====================================================================
+   Zone 4 — PromptEngine & Optimiseur de réponse
+   ===================================================================== */
+
+.pp-prep-optimizer {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pp-prep-optimizer__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--bg-tert);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.pp-prep-optimizer__section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pp-prep-optimizer__subhint {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.pp-prep-optimizer__subhint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.pp-prep-optimizer__actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 4px;
+}
+
+.pp-prep-optimizer__save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .pp-options__slider-wrap {

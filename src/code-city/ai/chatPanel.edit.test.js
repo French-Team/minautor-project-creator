@@ -52,13 +52,8 @@ vi.mock('./chatHistory.js', () => ({
 
 vi.mock('./quickActions.js', () => ({
   QUICK_ACTION_CATEGORIES: [],
-  ACTION_ICONS: {
-    settings: '<svg></svg>',
-    'alert-triangle': '<svg></svg>',
-    'x-circle': '<svg></svg>',
-    refresh: '<svg></svg>',
-    zap: '<svg></svg>',
-  },
+  // getActionIcon est un thin wrapper → on mock le résultat directement
+  getActionIcon: vi.fn(() => '<svg></svg>'),
 }));
 
 vi.mock('./providerPanel.js', () => ({

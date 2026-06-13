@@ -16,6 +16,107 @@ import { getCategory } from './providerLoader.js';
 import { getNextApiKey, resetRotationIndex, getApiKeyForEnvKey } from './envLoader.js';
 import { toast } from './toast.js';
 import { traceAiClient } from './traceLogger.js';
+import { resolveContextWindow } from './modelContextResolver.js';
+
+/* --------------------------------------------------------------------------
+ * Pool de concurrence par provider (slots parallèles)
+ *
+ * Limite le nombre de requêtes simultanées envoyées à un même provider.
+ * Utilisé principalement pour LM Studio qui expose un serveur avec
+ * `n_parallel` slots (1-8) : si on dépasse, le serveur serialize les
+ * requêtes excédentaires, ce qui annule le bénéfice du parallélisme.
+ *
+ * API : `acquireSlot(providerId, maxParallel)` retourne une Promise qui se
+ * résout quand un slot est disponible. `releaseSlot(providerId)` libère
+ * le slot et réveille la prochaine requête en file.
+ * ------------------------------------------------------------------------ */
+const _concurrencyPools = new Map();
+
+function getPool(providerId) {
+  if (!_concurrencyPools.has(providerId)) {
+    _concurrencyPools.set(providerId, { active: 0, queue: [] });
+  }
+  return _concurrencyPools.get(providerId);
+}
+
+/**
+ * Acquiert un slot pour le provider. Si `maxParallel <= 1`, comportement
+ * séquentiel (pas de pool). Sinon, attend qu'un slot se libère.
+ * @param {string} providerId
+ * @param {number} maxParallel
+ * @returns {Promise<void>}
+ */
+export function acquireSlot(providerId, maxParallel) {
+  const limit = Math.max(1, Math.floor(Number(maxParallel) || 1));
+  const pool = getPool(providerId);
+  if (limit <= 1 || pool.active < limit) {
+    pool.active += 1;
+    traceAiClient('acquireSlot', { providerId, active: pool.active, limit, immediate: true });
+    return Promise.resolve();
+  }
+  traceAiClient('acquireSlot', { providerId, active: pool.active, limit, immediate: false });
+  return new Promise((resolve) => {
+    pool.queue.push(resolve);
+  });
+}
+
+/**
+ * Libère un slot et réveille la prochaine requête en file (FIFO).
+ * @param {string} providerId
+ */
+export function releaseSlot(providerId) {
+  const pool = getPool(providerId);
+  const next = pool.queue.shift();
+  if (next) {
+    // Le slot reste actif (transféré au suivant)
+    traceAiClient('releaseSlot', { providerId, active: pool.active, queueLen: pool.queue.length, transferred: true });
+    next();
+  } else {
+    pool.active = Math.max(0, pool.active - 1);
+    traceAiClient('releaseSlot', { providerId, active: pool.active, queueLen: 0, transferred: false });
+  }
+}
+
+/** Reset le pool (utile pour les tests). */
+export function _resetConcurrencyPool(providerId) {
+  if (providerId) {
+    _concurrencyPools.delete(providerId);
+  } else {
+    _concurrencyPools.clear();
+  }
+}
+
+/**
+ * Lit la config serveur de LM Studio (best effort).
+ * Interroge l'endpoint OpenAI-compatible `/v1/models` pour récupérer la
+ * liste des modèles chargés. Le `n_parallel` réel n'est PAS exposé par
+ * l'API LM Studio — il doit être configuré dans l'UI LM Studio.
+ *
+ * @param {Object} provider - Doit avoir `id === 'lmstudio'`, `baseUrl`, `apiKey`.
+ * @returns {Promise<{ ok: boolean, models?: string[], n_parallel?: null, error?: string }>}
+ */
+export async function fetchLmStudioServerConfig(provider) {
+  if (provider.id !== 'lmstudio') {
+    return { ok: false, error: 'fetchLmStudioServerConfig: provider must be lmstudio' };
+  }
+  const apiKey = provider.apiKey || '';
+  const url = `${toLocalUrl(provider.baseUrl, provider.id)}/models`;
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) {
+      return { ok: false, error: `HTTP ${resp.status}` };
+    }
+    const data = await resp.json();
+    const models = Array.isArray(data?.data) ? data.data.map((m) => m.id).filter(Boolean) : [];
+    return { ok: true, models, n_parallel: null };
+  } catch (err) {
+    return { ok: false, error: err.message || 'fetch failed' };
+  }
+}
 
 /**
  * Convertit une URL de provider local en URL proxy pour éviter CORS.
@@ -369,7 +470,7 @@ function isTimeoutError(err) {
  * @returns {Promise<{ content: string, usage: { promptTokens: number, completionTokens: number }, detectedFormat?: string }>}
  */
 export async function chatCompletion(provider, messages, options = {}) {
-  const { maxRetries = 3, noRotation = false, onFormatDetected = null } = options;
+  const { maxRetries = 3, noRotation = false, onFormatDetected = null, timeout = 30000 } = options;
   const t0 = Date.now();
 
   traceAiClient('chatCompletion ENTRY', {
@@ -416,6 +517,13 @@ export async function chatCompletion(provider, messages, options = {}) {
     hasSystemMsg: !!messages.find((m) => m.role === 'system'),
   });
 
+  // Pool de concurrence : limite les requêtes simultanées envoyées au provider.
+  // Pour LM Studio, `maxParallel` correspond au `n_parallel` configuré côté
+  // serveur — au-delà, le serveur sérialise et annule le bénéfice du parallélisme.
+  const maxParallel = options.maxParallel || provider.maxParallel || 1;
+  await acquireSlot(provider.id, maxParallel);
+  try {
+
   let lastError;
   let lastStatus = null; // Dernier HTTP status pour détection 429
   let retries = 0;
@@ -438,7 +546,7 @@ export async function chatCompletion(provider, messages, options = {}) {
           method: 'POST',
           headers,
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(30000), // 30s timeout pour requête
+          signal: AbortSignal.timeout(timeout), // timeout configurable (défaut 30s)
         });
 
         if (response.ok) {
@@ -714,6 +822,10 @@ export async function chatCompletion(provider, messages, options = {}) {
     throw new Error('Rate limit (429) — toutes les clés sont temporairement bloquées. Attends quelques minutes avant de réessayer.');
   }
   throw lastError || new Error('Max retries exceeded');
+
+  } finally {
+    releaseSlot(provider.id);
+  }
 }
 
 /**
@@ -803,6 +915,12 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
     });
     return result;
   }
+
+  // Pool de concurrence : limite les requêtes simultanées envoyées au provider.
+  // Pour LM Studio, `maxParallel` correspond au `n_parallel` configuré côté
+  // serveur — au-delà, le serveur sérialise et annule le bénéfice du parallélisme.
+  await acquireSlot(provider.id, provider.maxParallel || 1);
+  try {
 
   let apiKey = provider.apiKey;
   let url = toLocalUrl(buildEndpointUrl(provider), provider.id);
@@ -972,6 +1090,10 @@ export async function streamChatCompletion(provider, messages, { onToken, onDone
     }
     throw err;
   }
+
+  } finally {
+    releaseSlot(provider.id);
+  }
 }
 
 /**
@@ -1071,7 +1193,12 @@ export async function testConnection(provider) {
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      return { ok: true, latency: Date.now() - start, models: data };
+      const latency = Date.now() - start;
+      // Note : la lecture `serverConfig` (modèles chargés / slots réels) se
+      // fait dans `runStep3()` de workflowRunner.js via fetchLmStudioServerConfig,
+      // puis est stockée sur le state via `actions.setServerConfig()`. On garde
+      // `testConnection()` minimaliste (ping seulement) pour les tests unitaires.
+      return { ok: true, latency, models: data };
     } else {
       // Providers en ligne nécessitent un modèle pour tester
       if (!provider.model) {
@@ -1170,35 +1297,70 @@ export async function fetchModels(provider) {
   } else if (id === 'gemini') {
     return normalizeGeminiModels(data);
   } else {
-    return normalizeOpenAIModels(data);
+    return normalizeOpenAIModels(data, id);
   }
 }
 
-function normalizeOpenAIModels(data) {
-  return (data.data || []).map((m) => ({
-    id: m.id,
-    name: m.id,
-    contextWindow: m.context_window || m.context_length || null,
-    isFree: m.id.includes(':free') || m.id.includes('-free'),
-  }));
+function normalizeOpenAIModels(data, providerId = 'openrouter') {
+  return (data.data || []).map((m) => {
+    // L'API ne retourne pas toujours la CW dans le listing (OpenRouter : seulement
+    // via /models/{id}, Mistral/Groq : jamais). Le resolver cascade (API > table
+    // exact > pattern > provider default > 4096) garantit une valeur TOUJOURS.
+    // providerId est passé dynamiquement par fetchModels() pour que le fallback
+    // "provider default" corresponde au BON provider (Mistral → 32k, Groq → 131k, etc.)
+    // et pas toujours "openrouter" → 128k (bug du 1er jet).
+    const apiCw = m.context_window || m.context_length || null;
+    const contextWindow = resolveContextWindow({
+      modelId: m.id,
+      providerId,
+      apiValue: apiCw,
+    });
+    return {
+      id: m.id,
+      name: m.id,
+      contextWindow,
+      isFree: m.id.includes(':free') || m.id.includes('-free'),
+    };
+  });
 }
 
 function normalizeGeminiModels(data) {
-  return (data.models || []).map((m) => ({
-    id: m.name,
-    name: m.displayName || m.name,
-    contextWindow: null,
-    isFree: false,
-  }));
+  return (data.models || []).map((m) => {
+    // L'API Gemini retourne `inputTokenLimit` dans /v1beta/models — on l'utilise
+    // en priorité, puis le resolver fait fallback sur la table pour les modèles
+    // non listés (gemini-1.0-pro, gemini-1.5-flash-8b, etc.).
+    const apiCw = m.inputTokenLimit || null;
+    const contextWindow = resolveContextWindow({
+      modelId: m.name,
+      providerId: 'gemini',
+      apiValue: apiCw,
+    });
+    return {
+      id: m.name,
+      name: m.displayName || m.name,
+      contextWindow,
+      isFree: false,
+    };
+  });
 }
 
 function normalizeOllamaModels(data) {
-  return (data.models || []).map((m) => ({
-    id: m.name,
-    name: m.name,
-    contextWindow: null,
-    isFree: true,
-  }));
+  return (data.models || []).map((m) => {
+    // Ollama /api/tags ne retourne PAS la CW. Avant : hardcodé 4096.
+    // Maintenant : resolver cascade via la table de référence (llama3.2 → 128000,
+    // mistral:7b → 32000, codestral → 32000, etc.).
+    const contextWindow = resolveContextWindow({
+      modelId: m.name,
+      providerId: 'ollama',
+      apiValue: null,
+    });
+    return {
+      id: m.name,
+      name: m.name,
+      contextWindow,
+      isFree: true,
+    };
+  });
 }
 
 /**
@@ -1266,7 +1428,14 @@ export async function testModel(provider, modelId) {
     format, // 'openai' | 'anthropic' | 'gemini'
     requestFormat: format, // Alias pour buildEndpointUrl() qui lit modelMeta.requestFormat
     capabilities,
-    contextWindow: null,
+    // La CW est résolue via le cascade resolver (API > table exact > pattern >
+    // provider default > 4096). Avant, c'était TOUJOURS null — maintenant on a
+    // toujours une valeur exploitable par le filtre CW de getEligiblePrepProviders.
+    contextWindow: resolveContextWindow({
+      modelId: modelId,
+      providerId: provider.id,
+      apiValue: null,
+    }),
     latency,
   };
 }
@@ -1298,7 +1467,14 @@ export async function fetchLocalModels(provider) {
       return (data.models || []).map(m => ({
         id: m.name,
         name: m.name,
-        contextWindow: m.detail?.parameter_size ? undefined : 4096,
+        // Avant : `m.detail?.parameter_size ? undefined : 4096` (hardcoded 4096).
+        // Maintenant : resolver cascade — utilise la table de référence (llama3.2 → 128000,
+        // mistral:7b → 32000, codestral → 32000, etc.) au lieu du fallback 4096 aveugle.
+        contextWindow: resolveContextWindow({
+          modelId: m.name,
+          providerId: 'ollama',
+          apiValue: m.detail?.parameter_size ? null : null,
+        }),
       }));
     } else {
       const headers = {};
@@ -1318,7 +1494,12 @@ export async function fetchLocalModels(provider) {
       return (data.data || []).map(m => ({
         id: m.id,
         name: m.id,
-        contextWindow: m.context_window || undefined,
+        // LM Studio n'expose pas la CW dans son API — resolver cascade via la table.
+        contextWindow: resolveContextWindow({
+          modelId: m.id,
+          providerId: 'lmstudio',
+          apiValue: m.context_window || null,
+        }),
       }));
     }
   } catch (err) {

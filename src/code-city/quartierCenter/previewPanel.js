@@ -13,7 +13,9 @@
 import { getState, subscribe, actions } from '../state.js';
 import { buildMermaidCode, renderMermaidToSvg } from '../mermaid/build.js';
 import { activateEditorTab, centerOnNode } from './centerTabs.js';
-import { openChatPanel } from '../ai/chatPanel.js';
+
+import { getChatIcon } from "../chatIcons.js";
+import { escapeHtml } from '../utils/html.js';
 
 let renderToken = 0;
 
@@ -85,7 +87,7 @@ async function renderPreview() {
   const analyseBtn = document.createElement('button');
   analyseBtn.type = 'button';
   analyseBtn.className = 'preview-analyse-btn';
-  analyseBtn.innerHTML = '<span class="preview-analyse-btn__icon">🤖</span> Analyser avec Mina';
+  analyseBtn.innerHTML = `${getChatIcon('zap', 14)} Analyser avec Mina`;
   analyseBtn.addEventListener('click', () => {
     const { nodes, edges } = getState();
     const graph = { nodes, edges };
@@ -134,11 +136,3 @@ function attachNodeClickHandlers(container) {
   });
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}

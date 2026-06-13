@@ -11,6 +11,7 @@
       "envKey": "OPENROUTER_API_KEY",
       "icon": "cloud",
       "description": "Agrégateur de modèles — accès à dozens de providers.",
+      "defaultContextWindow": 128000,
       "enabled": true,
       "maxParallel": 1
     },
@@ -26,6 +27,7 @@
       "icon": "sparkles",
       "description": "Google Gemini — modèles puissants de Google.",
       "baseUrlFormat": "custom",
+      "defaultContextWindow": 1000000,
       "enabled": true,
       "maxParallel": 1
     },
@@ -40,6 +42,7 @@
       "envKey": null,
       "icon": "code",
       "description": "Kilo Code Gateway — API OpenAI-compatible.",
+      "defaultContextWindow": 128000,
       "enabled": true,
       "maxParallel": 1
     },
@@ -54,6 +57,7 @@
       "envKey": "OPENCODE_ZEN_API_KEY",
       "icon": "sparkles",
       "description": "OpenCode Zen — modèles推理.",
+      "defaultContextWindow": 128000,
       "enabled": true,
       "maxParallel": 1
     },
@@ -68,6 +72,7 @@
       "envKey": "MISTRAL_API_KEY",
       "icon": "sparkles",
       "description": "Mistral AI — modèles Codestral pour le code + FIM.",
+      "defaultContextWindow": 32000,
       "enabled": true,
       "maxParallel": 1
     },
@@ -82,6 +87,7 @@
       "envKey": "GROQ_API_KEY",
       "icon": "sparkles",
       "description": "Groq — inference ultra-rapide avec Llama.",
+      "defaultContextWindow": 131072,
       "enabled": true,
       "maxParallel": 1
     },
@@ -96,6 +102,7 @@
       "envKey": null,
       "icon": "server",
       "description": "Ollama — LLM local sur ta machine.",
+      "defaultContextWindow": 8192,
       "enabled": true,
       "maxParallel": 1
     },
@@ -110,6 +117,7 @@
       "envKey": null,
       "icon": "server",
       "description": "LM Studio — GUI pour télécharger et exécuter des modèles locaux.",
+      "defaultContextWindow": 4096,
       "enabled": true,
       "maxParallel": 4
     }

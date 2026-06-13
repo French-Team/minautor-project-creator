@@ -281,8 +281,8 @@ test.describe('State actions', () => {
       context: { nodeCount: 5, edgeCount: 3, selectedNodes: [], canvasSummary: '...', contextHash: 'abc' },
       cached: false,
       timestamp: Date.now(),
-      filePath: 'data/prompts/test.md',
       duration: 15,
+      filePath: 'data/prompts/test-123.md',
     };
     await page.evaluate((data) => window.__state.actions.setCurrentPrompt(data), prepared);
     const stored = await page.evaluate(() => window.__state.getState().assistant.currentPrompt);
@@ -293,8 +293,8 @@ test.describe('State actions', () => {
   });
 
   test('13 - setCurrentPrompt ajoute a l historique', async ({ page }) => {
-    const p1 = { id: 'p1', type: 'analysis', userMessage: 'M1', prompt: '...', context: { nodeCount: 0, edgeCount: 0, selectedNodes: [], canvasSummary: '', contextHash: 'a' }, cached: false, timestamp: Date.now(), filePath: '', duration: 0 };
-    const p2 = { id: 'p2', type: 'suggestion', userMessage: 'M2', prompt: '...', context: { nodeCount: 0, edgeCount: 0, selectedNodes: [], canvasSummary: '', contextHash: 'b' }, cached: false, timestamp: Date.now(), filePath: '', duration: 0 };
+    const p1 = { id: 'p1', type: 'analysis', userMessage: 'M1', prompt: '...', context: { nodeCount: 0, edgeCount: 0, selectedNodes: [], canvasSummary: '', contextHash: 'a' }, cached: false, timestamp: Date.now(), duration: 0, filePath: 'data/prompts/p1.md' };
+    const p2 = { id: 'p2', type: 'suggestion', userMessage: 'M2', prompt: '...', context: { nodeCount: 0, edgeCount: 0, selectedNodes: [], canvasSummary: '', contextHash: 'b' }, cached: false, timestamp: Date.now(), duration: 0, filePath: 'data/prompts/p2.md' };
     await page.evaluate((d) => window.__state.actions.setCurrentPrompt(d), p1);
     await page.evaluate((d) => window.__state.actions.setCurrentPrompt(d), p2);
     const history = await page.evaluate(() => window.__state.getState().assistant.promptHistory);
@@ -308,7 +308,8 @@ test.describe('State actions', () => {
       window.__state.actions.setCurrentPrompt({
         id: 'test', type: 'analysis', userMessage: 'T', prompt: 'P',
         context: { nodeCount: 0, edgeCount: 0, selectedNodes: [], canvasSummary: '', contextHash: 'x' },
-        cached: false, timestamp: Date.now(), filePath: '', duration: 0,
+        cached: false, timestamp: Date.now(), duration: 0,
+        filePath: 'data/prompts/test.md',
       });
     });
     await page.evaluate(() => window.__state.actions.clearPromptCache());
@@ -344,7 +345,8 @@ test.describe('Integration UI', () => {
       window.__state.actions.setCurrentPrompt({
         id: 'err-test', type: 'analysis', userMessage: 'Test', prompt: 'Analyse...',
         context: { nodeCount: 0, edgeCount: 0, selectedNodes: [], canvasSummary: '', contextHash: 'h' },
-        cached: false, timestamp: Date.now(), filePath: '', duration: 0,
+        cached: false, timestamp: Date.now(), duration: 0,
+        filePath: 'data/prompts/err-test.md',
       });
     });
     await page.waitForTimeout(300);

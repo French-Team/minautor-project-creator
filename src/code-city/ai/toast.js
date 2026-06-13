@@ -21,6 +21,9 @@
  * @module toast
  */
 
+import { getChatIcon } from '../chatIcons.js';
+import { escapeHtml } from '../utils/html.js';
+
 const TOAST_DEFAULTS = {
   duration: 3500,
   closable: true,
@@ -28,10 +31,10 @@ const TOAST_DEFAULTS = {
 };
 
 const ICONS = {
-  success: '✓',
-  error: '✕',
-  warning: '⚠',
-  info: 'ℹ',
+  success: () => getChatIcon('check', 14),
+  error: () => getChatIcon('x', 14),
+  warning: () => getChatIcon('alert-triangle', 14),
+  info: () => getChatIcon('info', 14),
 };
 
 let containerEl = null;
@@ -104,9 +107,9 @@ function showToast(message, options = {}) {
   el.setAttribute('role', 'alert');
 
   el.innerHTML = `
-    <span class="toast__icon">${ICONS[type] || ICONS.info}</span>
+    <span class="toast__icon">${(ICONS[type] || ICONS.info)()}</span>
     <span class="toast__message">${escapeHtml(message)}</span>
-    ${closable ? `<button type="button" class="toast__close" aria-label="Fermer">✕</button>` : ''}
+    ${closable ? `<button type="button" class="toast__close" aria-label="Fermer">${getChatIcon('x', 12)}</button>` : ''}
   `;
 
   // Fermeture manuelle
@@ -135,14 +138,6 @@ function showToast(message, options = {}) {
 
   container.appendChild(el);
   return el;
-}
-
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 /**

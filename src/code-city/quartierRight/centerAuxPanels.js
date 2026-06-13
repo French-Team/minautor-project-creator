@@ -17,6 +17,8 @@ import { getState, subscribe, actions } from '../state.js';
 import { buildMermaidCode } from '../mermaid/build.js';
 import { getSchemaForType } from '../propertySchemas.js';
 import { PALETTE } from '../quartierLeft/fonctionsMermaidLeft/menuMermaidActionsLeft/menuMermaidActionsLeft.js';
+import { getChatIcon } from '../chatIcons.js';
+import { escapeHtml, escapeAttr } from '../utils/html.js';
 
 export async function initializeCenterAuxPanels() {
   console.log('📋 Initialisation des panneaux Code & Propriétés…');
@@ -161,10 +163,7 @@ function renderProperties() {
       </div>
 
       <div class="prop-actions">
-        <button type="button" class="btn btn--danger btn--sm" id="prop-delete-btn">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
-          </svg>
+        <button type="button" class="btn btn--danger btn--sm" id="prop-delete-btn">${getChatIcon('trash', 12)}
           <span>Supprimer</span>
         </button>
       </div>
@@ -180,11 +179,7 @@ function metadataRowHtml(index, m) {
     <div class="prop-metadata__row" data-index="${index}">
       <input type="text" class="prop-input prop-input--meta-key" placeholder="Clé" value="${escapeAttr(m.key || '')}" />
       <input type="text" class="prop-input prop-input--meta-value" placeholder="Valeur" value="${escapeAttr(m.value || '')}" />
-      <button type="button" class="btn-icon prop-metadata__remove" data-action="remove" title="Supprimer ce champ" aria-label="Supprimer ce champ">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 6L6 18M6 6l12 12"/>
-        </svg>
-      </button>
+      <button type="button" class="btn-icon prop-metadata__remove" data-action="remove" title="Supprimer ce champ" aria-label="Supprimer ce champ">${getChatIcon('x', 12)}</button>
     </div>
   `;
 }
@@ -290,7 +285,7 @@ function bindPropertyInputs(id) {
     try {
       await navigator.clipboard.writeText(idValue);
       const original = copyIdBtn.textContent;
-      copyIdBtn.textContent = '✓ Copié';
+      copyIdBtn.innerHTML = getChatIcon("check", 12) + " Copié";
       setTimeout(() => { copyIdBtn.textContent = original; }, 1200);
     } catch (err) {
       actions.setStatusMessage(`Copie impossible : ${err.message}`, 'error');
@@ -442,12 +437,3 @@ function isEditingFormField() {
  * Échappements HTML
  * -------------------------------------------------------------------------- */
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-function escapeAttr(s) { return escapeHtml(s); }

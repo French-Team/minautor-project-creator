@@ -41,6 +41,7 @@ import { validateStoredProvider } from './ai/providerLoader.js';
 import { initializeProviderPanel } from './ai/providerPanel.js';
 import { initializeChatPanel } from './ai/chatPanel.js';
 import { initAssistant } from './state.js';
+import { getChatIcon } from './chatIcons.js';
 
 export async function initializeApp() {
     console.log('🏙️ Initialisation de Code City...');
@@ -129,17 +130,9 @@ function createBaseStructure() {
                     </div>
                 </div>
                 <div class="sidebar__search">
-                    <svg class="sidebar__search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="7"/>
-                        <path d="M21 21l-4.3-4.3"/>
-                    </svg>
+                    <span class="sidebar__search-icon">${getChatIcon('search', 14)}</span>
                     <input type="text" class="sidebar__search-input" id="palette-search" placeholder="Rechercher…" autocomplete="off" />
-                    <button class="sidebar__search-clear" id="palette-search-clear" title="Effacer" aria-label="Effacer la recherche" hidden>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                    </button>
+                    <button class="sidebar__search-clear" id="palette-search-clear" title="Effacer" aria-label="Effacer la recherche" hidden>${getChatIcon('x', 12)}</button>
                 </div>
                 <div class="sidebar__body" id="palette-container">
                     <!-- Rempli dynamiquement par menuMermaidActionsLeft -->
@@ -158,60 +151,20 @@ function createBaseStructure() {
                 <div class="main__panel is-active" data-center-panel="editor" role="tabpanel">
                     <div class="toolbar">
                         <div class="toolbar__group">
-                            <button class="tbtn" id="undo-btn" title="Annuler (Ctrl+Z)" disabled>
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M3 7v6h6"/>
-                                    <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 2.8L3 13"/>
-                                </svg>
-                            </button>
-                            <button class="tbtn" id="redo-btn" title="Rétablir (Ctrl+Y)" disabled>
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M21 7v6h-6"/>
-                                    <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6.7 2.8L21 13"/>
-                                </svg>
-                            </button>
+                            <button class="tbtn" id="undo-btn" title="Annuler (Ctrl+Z)" disabled>${getChatIcon('undo', 16)}</button>
+                            <button class="tbtn" id="redo-btn" title="Rétablir (Ctrl+Y)" disabled>${getChatIcon('redo', 16)}</button>
                         </div>
                         <div class="toolbar__sep"></div>
                         <div class="toolbar__group">
-                            <button class="tbtn" id="grid-toggle" title="Afficher/masquer la grille">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                                    <path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>
-                                </svg>
-                            </button>
-                            <button class="tbtn" id="zoom-out" title="Zoom arrière">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <circle cx="11" cy="11" r="7"/>
-                                    <path d="M21 21l-4.3-4.3"/>
-                                    <path d="M8 11h6"/>
-                                </svg>
-                            </button>
+                            <button class="tbtn" id="grid-toggle" title="Afficher/masquer la grille">${getChatIcon('grid', 16)}</button>
+                            <button class="tbtn" id="zoom-out" title="Zoom arrière">${getChatIcon('zoom-out', 16)}</button>
                             <span class="toolbar__zoom" id="zoom-level">100%</span>
-                            <button class="tbtn" id="zoom-in" title="Zoom avant">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <circle cx="11" cy="11" r="7"/>
-                                    <path d="M21 21l-4.3-4.3"/>
-                                    <path d="M8 11h6M11 8v6"/>
-                                </svg>
-                            </button>
-                            <button class="tbtn" id="fit-to-screen" title="Ajuster à la vue">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/>
-                                    <path d="M3 12h18M12 3v18"/>
-                                </svg>
-                            </button>
+                            <button class="tbtn" id="zoom-in" title="Zoom avant">${getChatIcon('zoom-in', 16)}</button>
+                            <button class="tbtn" id="fit-to-screen" title="Ajuster à la vue">${getChatIcon('fit-to-screen', 16)}</button>
                         </div>
                         <div class="toolbar__sep"></div>
                         <div class="toolbar__group">
-                            <span class="toolbar__hint" title="Cliquez sur le port sortie d'un nœud puis sur le port entrée d'un autre">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <circle cx="5" cy="12" r="2.5"/>
-                                    <circle cx="19" cy="12" r="2.5"/>
-                                    <path d="M8 12h8"/>
-                                    <path d="M14 9l3 3-3 3"/>
-                                </svg>
-                                <span>Connecter</span>
-                            </span>
+                            <span class="toolbar__hint" title="Cliquez sur le port sortie d'un nœud puis sur le port entrée d'un autre">${getChatIcon('connect-hint', 13)}<span>Connecter</span></span>
                         </div>
                     </div>
 
@@ -230,13 +183,7 @@ function createBaseStructure() {
 
                 <div class="main__panel" data-center-panel="code" role="tabpanel">
                     <div class="code-toolbar">
-                        <button class="btn btn--sm" id="copy-code-btn">
-                            <svg class="btn__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <rect x="9" y="9" width="13" height="13" rx="2"/>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                            </svg>
-                            <span>Copier</span>
-                        </button>
+                        <button class="btn btn--sm" id="copy-code-btn">${getChatIcon('copy', 13)}<span>Copier</span></button>
                         <span class="hint">Modifications synchronisées</span>
                     </div>
                     <textarea id="code-preview" class="code-area" spellcheck="false" placeholder="Le code Mermaid apparaîtra ici…"></textarea>
@@ -269,11 +216,7 @@ function createBaseStructure() {
                 <aside class="app__providers-panel" role="dialog" aria-labelledby="app-providers-title">
                     <header class="app__providers-header">
                         <h2 id="app-providers-title" class="app__providers-title">Providers IA</h2>
-                        <button type="button" class="app__providers-close" id="app-providers-close" aria-label="Fermer le panneau providers">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M18 6L6 18M6 6l12 12"/>
-                            </svg>
-                        </button>
+                        <button type="button" class="app__providers-close" id="app-providers-close" aria-label="Fermer le panneau providers">${getChatIcon('x', 16)}</button>
                     </header>
                     <div class="app__providers-body" id="app-providers-body">
                         <!-- Rempli dynamiquement par providerPanel.js -->
@@ -296,18 +239,14 @@ function createBaseStructure() {
                             </div>
                         </div>
                         <div class="app__chat-header-right">
-                            <button type="button" class="app__chat-clear" id="app-chat-clear" title="Vider le chat" aria-label="Vider l'historique du chat">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>
-                                </svg>
-                            </button>
-                            <button type="button" class="app__chat-close" id="app-chat-close" aria-label="Fermer le panneau chat">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M18 6L6 18M6 6l12 12"/>
-                                </svg>
-                            </button>
+                            <button type="button" class="app__chat-clear" id="app-chat-clear" title="Vider le chat" aria-label="Vider l'historique du chat">${getChatIcon('broom', 14)}</button>
+                            <button type="button" class="app__chat-close" id="app-chat-close" aria-label="Fermer le panneau chat">${getChatIcon('x', 16)}</button>
                         </div>
                     </header>
+                    <!-- Topbar sticky : historique des prompts + compteur de tokens -->
+                    <div class="app__chat-topbar" id="app-chat-topbar">
+                        <!-- Rempli dynamiquement par chatPanel.js -->
+                    </div>
                     <div class="chat-messages" id="app-chat-body">
                         <!-- Rempli dynamiquement par chatPanel.js -->
                     </div>
@@ -326,11 +265,7 @@ function createBaseStructure() {
                 <aside class="app__export-panel" role="dialog" aria-labelledby="app-export-title">
                     <header class="app__export-header">
                         <h2 id="app-export-title" class="app__export-title">Exporter</h2>
-                        <button type="button" class="app__export-close" id="app-export-close" aria-label="Fermer le panneau d'export">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M18 6L6 18M6 6l12 12"/>
-                            </svg>
-                        </button>
+                        <button type="button" class="app__export-close" id="app-export-close" aria-label="Fermer le panneau d'export">${getChatIcon('x', 16)}</button>
                     </header>
                     <div class="app__export-body" id="app-export-body">
                         <!-- Rempli dynamiquement par exportPanel.js -->

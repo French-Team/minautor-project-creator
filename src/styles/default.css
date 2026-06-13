@@ -3959,7 +3959,33 @@ body.mode-connect .canvas-element.connect-target { cursor: crosshair; }
   background: var(--accent-soft);
   color: var(--accent);
   border-color: var(--accent-soft);
-  transform: rotate(-30deg);
+}
+
+/* Bouton re-préparer le prompt (dans la section prompt préparé) */
+.chat-prompt-section__reprepare {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  flex-shrink: 0;
+}
+.chat-prompt-section__reprepare:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-soft);
+}
+.chat-prompt-section__reprepare svg {
+  width: 12px;
+  height: 12px;
+  display: block;
 }
   color: var(--success);
 }
@@ -4776,6 +4802,764 @@ code.hljs { padding: 3px 5px; }
   .app__chat-panel,
   .app__chat-backdrop,
   .chat-msg__actions {
+    transition: none;
+  }
+}
+/* =========================================================================
+ * Chat prompt history — section repliable listant les prompts préparés
+ * persistés dans data/prompts/ via /api/prompts.
+ * Suit la même convention BEM que .chat-prompt-section, .chat-notice, etc.
+ * ========================================================================= */
+
+.chat-prompt-history {
+  margin: 8px 12px;
+  border: 1px solid var(--border-soft, #e6e9f0);
+  border-radius: 8px;
+  background: var(--bg-elev, #ffffff);
+  font-size: 12px;
+  transition: border-color 0.15s ease;
+}
+
+.chat-prompt-history[open] {
+  border-color: var(--border, #d8dde6);
+  border-left-color: transparent;
+  box-shadow: inset 3px 0 0 0 var(--accent, #3b6ef5);
+}
+
+/* ---------- Summary (header repliable) ---------- */
+
+.chat-prompt-history__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  border-radius: 8px;
+  transition: background 0.12s ease;
+}
+
+.chat-prompt-history__summary::-webkit-details-marker {
+  display: none; /* Supprimer le marker par défaut de <details> dans WebKit */
+}
+
+.chat-prompt-history__summary::marker {
+  display: none; /* Idem Firefox */
+}
+
+.chat-prompt-history__summary:hover {
+  background: var(--bg-hover, #e6ebf3);
+}
+
+.chat-prompt-history__icon {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.chat-prompt-history__title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text, #1a1d24);
+}
+
+.chat-prompt-history__count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+  font-variant-numeric: tabular-nums;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: var(--bg-tert, #eef1f6);
+}
+
+/* ---------- Content (zone dépliée) ---------- */
+
+.chat-prompt-history__content {
+  padding: 0 12px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------- Filters (recherche + filtre type) ---------- */
+
+.chat-prompt-history__filters {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chat-prompt-history__search {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft, #e6e9f0);
+  border-radius: 6px;
+  background: var(--bg, #f4f6fa);
+  color: var(--text, #1a1d24);
+  font-size: 12px;
+  font-family: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.chat-prompt-history__search:focus {
+  outline: none;
+  border-color: var(--accent, #3b6ef5);
+  background: var(--bg-elev, #ffffff);
+}
+
+.chat-prompt-history__search::placeholder {
+  color: var(--text-faint, #9aa0ac);
+}
+
+.chat-prompt-history__type-filter {
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft, #e6e9f0);
+  border-radius: 6px;
+  background: var(--bg, #f4f6fa);
+  color: var(--text, #1a1d24);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.chat-prompt-history__type-filter:focus {
+  outline: none;
+  border-color: var(--accent, #3b6ef5);
+}
+
+/* ---------- List (ul) ---------- */
+
+.chat-prompt-history__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Scrollbar fine pour cohérence avec le reste de l'UI */
+.chat-prompt-history__list::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-prompt-history__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-prompt-history__list::-webkit-scrollbar-thumb {
+  background: var(--border, #d8dde6);
+  border-radius: 3px;
+}
+.chat-prompt-history__list::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong, #b8bfcb);
+}
+
+/* ---------- États liste (loading, empty, error) ---------- */
+
+.chat-prompt-history__loading,
+.chat-prompt-history__empty,
+.chat-prompt-history__error {
+  padding: 16px 8px;
+  text-align: center;
+  color: var(--text-muted, #6b7280);
+  font-size: 12px;
+  font-style: italic;
+  list-style: none;
+}
+
+.chat-prompt-history__error {
+  color: var(--danger, #dc2626);
+  font-style: normal;
+}
+
+/* ---------- Item (un prompt dans la liste) ---------- */
+
+.chat-prompt-history__item {
+  list-style: none;
+  border: 1px solid var(--border-soft, #e6e9f0);
+  border-radius: 6px;
+  background: var(--bg, #f4f6fa);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.chat-prompt-history__item:hover {
+  border-color: var(--border, #d8dde6);
+}
+
+
+.chat-prompt-history__item-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  border-radius: 6px;
+  transition: background 0.12s ease;
+}
+
+.chat-prompt-history__item-summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-prompt-history__item-summary::marker {
+  display: none;
+}
+
+.chat-prompt-history__item-summary:hover {
+  background: var(--bg-hover, #e6ebf3);
+}
+
+/* ---------- Type badge (couleur par type) ---------- */
+
+.chat-prompt-history__item-type {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: #ffffff;
+  background: var(--text-muted, #6b7280);
+  line-height: 1.4;
+}
+
+/* Variantes par type — chaque type a sa couleur d'accent */
+.chat-prompt-history__item-type--analysis {
+  background: #3b6ef5; /* blue */
+}
+
+.chat-prompt-history__item-type--suggestion {
+  background: #10b981; /* green */
+}
+
+.chat-prompt-history__item-type--documentation,
+.chat-prompt-history__item-type--doc {
+  background: #8b5cf6; /* purple */
+}
+
+.chat-prompt-history__item-type--enrichment,
+.chat-prompt-history__item-type--enrich {
+  background: #f59e0b; /* amber */
+}
+
+.chat-prompt-history__item-type--architecture,
+.chat-prompt-history__item-type--arch {
+  background: #14b8a6; /* teal */
+}
+
+.chat-prompt-history__item-type--conversation {
+  background: #6b7280; /* gray */
+}
+
+.chat-prompt-history__item-type--test {
+  background: #ec4899; /* pink */
+}
+
+.chat-prompt-history__item-type--unknown {
+  background: #9aa0ac; /* light gray */
+}
+
+/* ---------- Item meta (date / time / tokens) ---------- */
+
+.chat-prompt-history__item-meta {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+  min-width: 0;
+}
+
+.chat-prompt-history__item-date,
+.chat-prompt-history__item-time,
+.chat-prompt-history__item-tokens {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chat-prompt-history__item-tokens {
+  color: var(--text-faint, #9aa0ac);
+}
+
+/* ---------- Delete button ---------- */
+
+.chat-prompt-history__item-delete {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted, #6b7280);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.chat-prompt-history__item-delete:hover {
+  background: rgba(192, 57, 43, 0.12);
+  color: var(--danger, #dc2626);
+}
+
+.chat-prompt-history__item-delete:focus {
+  outline: 2px solid var(--accent, #3b6ef5);
+  outline-offset: 1px;
+}
+
+/* ---------- Item content (zone <pre> avec le contenu .md) ---------- */
+
+.chat-prompt-history__item-content {
+  padding: 0 10px 10px 10px;
+  border-top: 1px solid var(--border-soft, #e6e9f0);
+  margin-top: 0;
+}
+
+.chat-prompt-history__item-loading,
+.chat-prompt-history__item-error {
+  display: block;
+  padding: 12px 8px;
+  text-align: center;
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.chat-prompt-history__item-error {
+  color: var(--danger, #dc2626);
+  font-style: normal;
+}
+
+.chat-prompt-history__item-pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-canvas, #f8fafc);
+  border: 1px solid var(--border-soft, #e6e9f0);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text, #1a1d24);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.chat-prompt-history__item-pre::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.chat-prompt-history__item-pre::-webkit-scrollbar-thumb {
+  background: var(--border, #d8dde6);
+  border-radius: 3px;
+}
+
+/* ---------- Dark mode (surcharges .theme-dark) ---------- */
+
+.theme-dark .chat-prompt-history {
+  background: var(--bg-elev, #161b23);
+  border-color: var(--border-soft, #1d242e);
+}
+
+.theme-dark .chat-prompt-history[open] {
+  border-color: var(--border, #232b37);
+}
+
+.theme-dark .chat-prompt-history__title {
+  color: var(--text, #e6e9f0);
+}
+
+.theme-dark .chat-prompt-history__count {
+  background: var(--bg-tert, #1d242e);
+  color: var(--text-muted, #9aa0ac);
+}
+
+.theme-dark .chat-prompt-history__summary:hover,
+.theme-dark .chat-prompt-history__item-summary:hover {
+  background: var(--bg-hover, #232b37);
+}
+
+.theme-dark .chat-prompt-history__search,
+.theme-dark .chat-prompt-history__type-filter {
+  background: var(--bg-tert, #1d242e);
+  border-color: var(--border-soft, #1d242e);
+  color: var(--text, #e6e9f0);
+}
+
+.theme-dark .chat-prompt-history__search:focus,
+.theme-dark .chat-prompt-history__type-filter:focus {
+  background: var(--bg-elev, #161b23);
+}
+
+.theme-dark .chat-prompt-history__item {
+  background: var(--bg-tert, #1d242e);
+  border-color: var(--border-soft, #1d242e);
+}
+
+.theme-dark .chat-prompt-history__item:hover {
+  border-color: var(--border, #232b37);
+}
+
+.theme-dark .chat-prompt-history__item-content {
+  border-top-color: var(--border-soft, #1d242e);
+}
+
+.theme-dark .chat-prompt-history__item-pre {
+  background: var(--bg-canvas, #121821);
+  border-color: var(--border-soft, #1d242e);
+  color: var(--text, #e6e9f0);
+}
+
+.theme-dark .chat-prompt-history__item-delete:hover {
+  background: rgba(231, 76, 60, 0.18);
+  color: var(--danger, #f06464);
+}
+
+
+/* ---------- Reduced motion : désactiver transitions de la section ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .chat-prompt-history,
+  .chat-prompt-history__item,
+  .chat-prompt-history__summary,
+  .chat-prompt-history__item-summary,
+  .chat-prompt-history__item-delete,
+  .chat-prompt-history__search,
+  .chat-prompt-history__type-filter {
+    transition: none;
+  }
+}
+
+/* =========================================================================
+ * Chat topbar — container sticky entre le header et le body du chat
+ * Regroupe : historique des prompts (repliable) + stats cumulatives
+ *            + compteur de streaming live (amélioré visuellement)
+ * ========================================================================= */
+
+.app__chat-topbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-elev, #ffffff);
+  border-bottom: 1px solid var(--border, #d8dde6);
+  flex: 0 0 auto;
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* Custom scrollbar pour cohérence avec l'UI */
+.app__chat-topbar::-webkit-scrollbar { width: 6px; }
+.app__chat-topbar::-webkit-scrollbar-track { background: transparent; }
+.app__chat-topbar::-webkit-scrollbar-thumb {
+  background: var(--border, #d8dde6);
+  border-radius: 3px;
+}
+
+/* Le history (repliable) doit prendre toute la largeur dans la topbar */
+.app__chat-topbar .chat-prompt-history {
+  margin: 0;
+}
+/* Le topbar gère son propre scroll : on retire la hauteur max de la liste
+   pour eviter le conflit 280px (topbar) vs 320px (liste). */
+.app__chat-topbar .chat-prompt-history__list {
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* ---------- Cumulative optimization stats (toujours visible) ---------- */
+.chat-cumulative-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bg-tert, #eef1f6);
+  border: 1px solid var(--border-soft, #e6e9f0);
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+  font-variant-numeric: tabular-nums;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.chat-cumulative-stats:hover {
+  background: var(--bg-hover, #e6ebf3);
+  border-color: var(--border, #d8dde6);
+}
+
+.chat-cumulative-stats--empty {
+  font-style: italic;
+  color: var(--text-faint, #9aa0ac);
+}
+
+.chat-cumulative-stats__icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft, #e7eeff);
+  color: var(--accent, #3b6ef5);
+}
+
+.chat-cumulative-stats__icon svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.chat-cumulative-stats__text strong {
+  color: var(--text, #1a1d24);
+  font-weight: 600;
+}
+
+/* ---------- Streaming stats (amélioré visuellement) ---------- */
+.chat-stream-stats {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: linear-gradient(
+    135deg,
+    var(--accent-soft, #e7eeff) 0%,
+    var(--bg-elev, #ffffff) 100%
+  );
+  border: 1px solid var(--accent, #3b6ef5);
+  font-size: 12px;
+  color: var(--text, #1a1d24);
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 4px rgba(59, 110, 245, 0.12);
+  overflow: hidden;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.chat-stream-stats--done {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+/* Pulsing live indicator (gauche) */
+.chat-stream-stats__pulse {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #3b6ef5);
+  box-shadow: 0 0 0 0 var(--accent, #3b6ef5);
+  animation: chat-stream-pulse 1.4s ease-out infinite;
+}
+
+@keyframes chat-stream-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(59, 110, 245, 0.6); }
+  70%  { box-shadow: 0 0 0 8px rgba(59, 110, 245, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 110, 245, 0); }
+}
+
+.chat-stream-stats__icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent, #3b6ef5);
+  color: #ffffff;
+}
+
+.chat-stream-stats__icon svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.chat-stream-stats__text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.chat-stream-stats__count {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #1a1d24);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-stream-stats__time-sep {
+  color: var(--text-faint, #9aa0ac);
+  font-size: 11px;
+  flex-shrink: 0;
+  user-select: none;
+  margin: 0 2px;
+}
+
+.chat-stream-stats__time {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted, #6b7280);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.chat-stream-stats__unit {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted, #6b7280);
+  margin-right: 4px;
+}
+
+.chat-stream-stats__bar {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 80px;
+  height: 6px;
+  background: var(--border-soft, #e6e9f0);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+/* Graduations en % : traits verticaux tous les 10% (10%, 20%, ..., 100%)
+   Le tick à 100% est légèrement clippé par le border-radius (3px) — c'est
+   intentionnel : le bord droit de la barre marque déjà 100% visuellement. */
+.chat-stream-stats__bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    transparent calc(10% - 1px),
+    rgba(0, 0, 0, 0.35) calc(10% - 1px),
+    rgba(0, 0, 0, 0.35) 10%
+  ) 0 0 / 10% 100%;
+  pointer-events: none;
+  z-index: 2;
+  border-radius: 3px;
+  /* Contraste garanti sur le fill coloré (bleu/vert/ambre/rouge) :
+     invertit la couleur du tick pour qu'il soit toujours lisible. */
+  mix-blend-mode: difference;
+}
+
+/* Dark mode : ticks plus clairs (le noir semi-transparent est invisible
+   sur le fond --border-soft sombre #1d242e) */
+.theme-dark .chat-stream-stats__bar::before {
+  background: linear-gradient(
+    to right,
+    transparent calc(10% - 1px),
+    rgba(255, 255, 255, 0.4) calc(10% - 1px),
+    rgba(255, 255, 255, 0.4) 10%
+  ) 0 0 / 10% 100%;
+}
+
+.chat-stream-stats__bar-fill {
+  position: relative;
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--success, #15a35a), #34d399);
+  border-radius: 3px;
+  transition: width 0.2s ease, background 0.2s ease;
+  z-index: 1;
+}
+
+/* ---------- Dark mode overrides ---------- */
+.theme-dark .app__chat-topbar {
+  background: var(--bg-elev, #161b23);
+  border-bottom-color: var(--border, #232b37);
+}
+
+.theme-dark .chat-cumulative-stats {
+  background: var(--bg-tert, #1d242e);
+  border-color: var(--border-soft, #1d242e);
+}
+
+.theme-dark .chat-cumulative-stats:hover {
+  background: var(--bg-hover, #232b37);
+  border-color: var(--border, #2a313c);
+}
+
+.theme-dark .chat-cumulative-stats__icon {
+  background: rgba(91, 141, 239, 0.18);
+  color: var(--accent, #5b8def);
+}
+
+.theme-dark .chat-cumulative-stats__text strong {
+  color: var(--text, #e7ecf3);
+}
+
+.theme-dark .chat-cumulative-stats--empty {
+  color: var(--text-faint, #6b7588);
+}
+
+.theme-dark .chat-stream-stats {
+  background: linear-gradient(
+    135deg,
+    rgba(91, 141, 239, 0.16) 0%,
+    var(--bg-elev, #161b23) 100%
+  );
+  border-color: var(--accent, #5b8def);
+  box-shadow: 0 1px 4px rgba(91, 141, 239, 0.18);
+}
+
+.theme-dark .chat-stream-stats__icon {
+  background: var(--accent, #5b8def);
+  color: #0e1218;
+}
+
+.theme-dark .chat-stream-stats__count,
+.theme-dark .chat-stream-stats__time {
+  color: var(--text, #e7ecf3);
+}
+
+.theme-dark .chat-stream-stats__unit {
+  color: var(--text-muted, #93a0b3);
+}
+
+.theme-dark .chat-stream-stats__bar {
+  background: var(--border-soft, #232a35);
+}
+
+.theme-dark .chat-stream-stats__pulse {
+  background: var(--accent, #5b8def);
+  box-shadow: 0 0 0 0 var(--accent, #5b8def);
+}
+
+@keyframes chat-stream-pulse-dark {
+  0%   { box-shadow: 0 0 0 0 rgba(91, 141, 239, 0.6); }
+  70%  { box-shadow: 0 0 0 8px rgba(91, 141, 239, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(91, 141, 239, 0); }
+}
+
+.theme-dark .chat-stream-stats__pulse {
+  animation-name: chat-stream-pulse-dark;
+}
+
+/* ---------- Reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .chat-stream-stats__pulse,
+  .chat-stream-stats,
+  .chat-stream-stats__bar-fill {
+    animation: none;
     transition: none;
   }
 }

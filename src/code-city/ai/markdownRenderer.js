@@ -12,6 +12,7 @@
 import { marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
 import hljs from 'highlight.js';
+import { escapeHtml } from '../utils/html.js';
 
 /* ------------------------------------------------------------------ */
 /*  Configuration marked + highlight.js                               */
@@ -147,14 +148,6 @@ function sanitizeHtml(html) {
  * @param {string} str
  * @returns {string}
  */
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 /* ------------------------------------------------------------------ */
 /*  API publique                                                      */
 /* ------------------------------------------------------------------ */

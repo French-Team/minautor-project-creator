@@ -161,9 +161,11 @@ describe('PromptEngine', () => {
       expect(ctx).toBe(4096);
     });
 
-    it('retourne 8192 pour llama3.2:3b', async () => {
+    it('retourne 128000 pour llama3.2:3b', async () => {
+      // 128k = valeur de référence du resolver cascade (pattern "llama3.2")
+      // Plus précise que l'ancienne table hardcodée (8192)
       const ctx = await PromptEngine.detectContextWindow({}, 'llama3.2:3b');
-      expect(ctx).toBe(8192);
+      expect(ctx).toBe(128000);
     });
 
     it('retourne 128000 pour llama3.1:8b', async () => {
@@ -173,7 +175,7 @@ describe('PromptEngine', () => {
 
     it('ignore la casse du modèle', async () => {
       const ctx = await PromptEngine.detectContextWindow({}, 'LLAMA3.2:3B');
-      expect(ctx).toBe(8192);
+      expect(ctx).toBe(128000);
     });
 
     it('retourne 4096 pour modèle null/undefined', async () => {
@@ -189,7 +191,7 @@ describe('PromptEngine', () => {
         { id: 'ollama', baseUrl: 'http://localhost:11434/v1' },
         'llama3.2:3b'
       );
-      expect(ctx).toBe(8192); // Fallback table de correspondance
+      expect(ctx).toBe(128000); // Fallback resolver cascade (pattern "llama3.2")
       expect(mockFetch).toHaveBeenCalled();
     });
   });
@@ -642,8 +644,8 @@ describe('PromptEngine', () => {
         apiEnhanced: false,
         cached: false,
         timestamp: Date.now(),
-        filePath: '',
         duration: 0,
+        filePath: 'data/prompts/test-prepared-1.md',
       };
 
       it("sans preparedPrompt émet SKIP reason='no-prepared-prompt' et retourne null", async () => {
